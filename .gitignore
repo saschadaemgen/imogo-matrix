@@ -27,3 +27,6 @@ local.toml
 # Generated test data
 test-data/
 coverage/
+
+# Provisioner runtime config (real one is local, not committed)
+crates/imogo-provisioner/provisioner.toml

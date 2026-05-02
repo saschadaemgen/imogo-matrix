@@ -1,0 +1,13 @@
+# imogo-provisioner example configuration.
+# Copy to provisioner.toml and adjust. Real provisioner.toml is git-ignored.
+
+[http]
+listen = "127.0.0.1:8080"
+request_timeout_secs = 30
+
+[log]
+# tracing-subscriber EnvFilter syntax.
+# Examples: "info", "debug", "imogo_provisioner=debug,tower_http=info"
+filter = "imogo_provisioner=info,tower_http=info"
+# JSON logging for production. Plain text for local development.
+json = false
