@@ -22,6 +22,10 @@ pub enum Error {
     /// I/O error from the standard library.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Matrix homeserver connection setup or runtime failure.
+    #[error("matrix error: {0}")]
+    Matrix(String),
 }
 
 impl From<figment::Error> for Error {

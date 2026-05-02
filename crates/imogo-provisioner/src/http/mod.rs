@@ -3,6 +3,7 @@
 
 //! HTTP server module.
 
+pub mod appservice;
 pub mod health;
 pub mod router;
 
@@ -10,24 +11,35 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use tokio::signal;
+use tower_http::timeout::TimeoutLayer;
 use tracing::info;
 
-use crate::{config::Config, error::Error};
+use crate::{config::Config, error::Error, matrix::MatrixRegistry};
 
-/// Run the HTTP server until a shutdown signal is received.
-///
-/// Binds to [`HttpConfig::listen`](crate::config::HttpConfig::listen),
-/// installs a tracing layer and a per-request timeout layer, and serves
-/// until either Ctrl-C or SIGTERM (Unix only) is received.
+/// Run the HTTP server until a shutdown signal is received. The Matrix
+/// registry is built before the listener accepts connections so a misconfigured
+/// homeserver fails fast.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if binding the listener fails or the underlying
-/// `axum::serve` returns an I/O error.
+/// Returns [`Error::Matrix`] if any configured homeserver cannot be turned
+/// into a `matrix-sdk` client, or [`Error::Io`] if the listener cannot bind
+/// or `axum::serve` returns an I/O error.
 pub async fn run(config: Config) -> Result<(), Error> {
-    let app = router::build()
+    let registry = MatrixRegistry::build(&config.matrix.homeservers)
+        .await
+        .map_err(|e| Error::Matrix(e.to_string()))?;
+
+    let healthy = registry.ping_all().await;
+    info!(
+        configured = config.matrix.homeservers.len(),
+        healthy = healthy.len(),
+        "matrix homeservers initialised"
+    );
+
+    let app = router::build(registry)
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(tower_http::timeout::TimeoutLayer::with_status_code(
+        .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(config.http.request_timeout_secs),
         ));

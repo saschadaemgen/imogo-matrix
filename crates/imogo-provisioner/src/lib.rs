@@ -11,6 +11,7 @@
 pub mod config;
 pub mod error;
 pub mod http;
+pub mod matrix;
 pub mod telemetry;
 
 /// Crate version, taken from Cargo.toml at compile time.

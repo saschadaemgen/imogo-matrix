@@ -6,8 +6,31 @@ listen = "127.0.0.1:8080"
 request_timeout_secs = 30
 
 [log]
-# tracing-subscriber EnvFilter syntax.
-# Examples: "info", "debug", "imogo_provisioner=debug,tower_http=info"
-filter = "imogo_provisioner=info,tower_http=info"
-# JSON logging for production. Plain text for local development.
+filter = "imogo_provisioner=info,tower_http=info,matrix_sdk=info"
 json = false
+
+# Matrix homeserver connections.
+# Each entry is keyed by a logical name (e.g. b2b, b2c) which is also used
+# in the inbound AS endpoint URLs the homeserver is configured to call.
+#
+# Example registration URL on the homeserver side for the `b2b` entry:
+#   url: http://localhost:8080/_matrix/app/v1/b2b
+#
+# IMPORTANT: tokens shown here are placeholders. Real tokens belong in the
+# git-ignored provisioner.toml or in environment variables.
+
+[matrix.homeservers.b2b]
+url = "https://matrix.imogo.de"
+server_name = "imogo.de"
+appservice_id = "imogo-provisioner"
+as_token = "REPLACE_ME_WITH_REAL_AS_TOKEN"
+hs_token = "REPLACE_ME_WITH_REAL_HS_TOKEN"
+sender_localpart = "imogo-provisioner"
+
+[matrix.homeservers.b2c]
+url = "https://matrix.endkunden.imogo.de"
+server_name = "endkunden.imogo.de"
+appservice_id = "imogo-provisioner"
+as_token = "REPLACE_ME_WITH_REAL_AS_TOKEN"
+hs_token = "REPLACE_ME_WITH_REAL_HS_TOKEN"
+sender_localpart = "imogo-provisioner"

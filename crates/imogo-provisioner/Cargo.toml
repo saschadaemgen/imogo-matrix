@@ -35,7 +35,28 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Matrix client SDK
+# `bundled-sqlite` instead of `sqlite` so libsqlite3-sys compiles sqlite3 from
+# source. Windows hosts typically do not ship sqlite3.lib system-wide.
+matrix-sdk = { version = "0.13", default-features = false, features = [
+    "rustls-tls",
+    "bundled-sqlite",
+    "markdown",
+] }
+
+# URL parsing
+url = { version = "2", features = ["serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"], default-features = false }
+
+# Constant-time string comparison for hs_token verification
+subtle = "2"
+
+# HTTP client for outbound calls (homeserver liveness probe in 02b, more in 02c)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
 [dev-dependencies]
 # Testing
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "test-util"] }
-reqwest = { version = "0.12", features = ["json"] }
+wiremock = "0.6"

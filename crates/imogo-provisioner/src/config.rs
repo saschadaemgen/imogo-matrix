@@ -8,27 +8,28 @@
 //! Environment variables use double underscores as separators, so
 //! `IMOGO_PROVISIONER_HTTP__LISTEN` overrides `http.listen`.
 
-use std::net::SocketAddr;
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
 };
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::error::Error;
 
 /// Top-level configuration for the provisioner.
-///
-/// `Default` delegates to [`HttpConfig::default`] and [`LogConfig::default`],
-/// which in turn carry the real built-in values (listen address, timeout,
-/// log filter).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// HTTP server settings.
     pub http: HttpConfig,
     /// Logging settings.
     pub log: LogConfig,
+    /// Matrix homeserver connections. Map key is a logical name like `b2b`
+    /// or `b2c` used in logs and as the URL prefix for incoming AS endpoints.
+    #[serde(default)]
+    pub matrix: MatrixConfig,
 }
 
 /// HTTP server settings.
@@ -53,7 +54,6 @@ impl Default for HttpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogConfig {
     /// Log level filter, follows the `tracing-subscriber` `env_filter` syntax.
-    /// Examples: `info`, `debug`, `imogo_provisioner=debug,tower_http=info`.
     pub filter: String,
     /// If true, emit logs as JSON. If false, human-readable text.
     pub json: bool,
@@ -68,6 +68,32 @@ impl Default for LogConfig {
     }
 }
 
+/// Matrix configuration: a map of logical homeserver names to their
+/// connection settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MatrixConfig {
+    /// Connections to homeservers, keyed by logical name (e.g. `b2b`, `b2c`).
+    #[serde(default)]
+    pub homeservers: BTreeMap<String, HomeserverConfig>,
+}
+
+/// One Matrix homeserver connection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeserverConfig {
+    /// Base URL of the homeserver, e.g. `https://matrix.imogo.de`.
+    pub url: Url,
+    /// Server name as in `server_name` of the homeserver, e.g. `imogo.de`.
+    pub server_name: String,
+    /// Application service ID matching the registration `id` field.
+    pub appservice_id: String,
+    /// AS token: the provisioner sends this to the homeserver.
+    pub as_token: String,
+    /// HS token: the homeserver sends this to the provisioner.
+    pub hs_token: String,
+    /// The localpart used by the AS bot itself, e.g. `imogo-provisioner`.
+    pub sender_localpart: String,
+}
+
 impl Config {
     /// Load configuration from defaults, optional `provisioner.toml`, and
     /// environment variables.
@@ -80,8 +106,7 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Config`] if a configuration source is malformed
-    /// (invalid TOML, unparseable values, type mismatches).
+    /// Returns [`Error::Config`] if a configuration source is malformed.
     pub fn load() -> Result<Self, Error> {
         let figment = Figment::new()
             .merge(Serialized::defaults(Self::default()))
