@@ -8,10 +8,12 @@ use std::{collections::BTreeMap, net::SocketAddr};
 use imogo_provisioner::{
     accounts::AccountsRepo,
     audit::AuditLog,
-    config::{DbConfig, HomeserverConfig, ProvisioningConfig},
+    b2c::B2cService,
+    capability::CapabilityVerifier,
+    config::{B2cConfig, DbConfig, HomeserverConfig, ProvisioningConfig},
     db,
     http::{appservice::AppState, router},
-    keys::KeyRegistry,
+    keys::{CapabilityKeyRegistry, KeyRegistry},
     matrix::MatrixRegistry,
     nonce_store::NonceStore,
     provisioning::ProvisioningService,
@@ -61,7 +63,7 @@ async fn build_test_state(homeservers: BTreeMap<String, HomeserverConfig>) -> (A
     let pool = db::open_pool(&db_cfg).await.expect("db open");
     let audit_log = AuditLog::new(pool.clone());
     let nonce_store = NonceStore::new(pool.clone(), 600);
-    let accounts = AccountsRepo::new(pool);
+    let accounts = AccountsRepo::new(pool.clone());
     let registry = MatrixRegistry::build(&homeservers).await.expect("registry");
     let verifier = WebhookVerifier::new(KeyRegistry::default(), nonce_store, 300);
     let provisioning = ProvisioningService::new(
@@ -71,12 +73,23 @@ async fn build_test_state(homeservers: BTreeMap<String, HomeserverConfig>) -> (A
         ProvisioningConfig::default(),
         reqwest::Client::new(),
     );
+    let capability_verifier =
+        CapabilityVerifier::new(CapabilityKeyRegistry::default(), pool.clone());
+    let b2c = B2cService::new(
+        pool,
+        audit_log.clone(),
+        registry.clone(),
+        B2cConfig::default(),
+        reqwest::Client::new(),
+    );
     (
         AppState {
             registry,
             webhook_verifier: verifier,
             audit_log,
             provisioning,
+            b2c,
+            capability_verifier,
         },
         tmp,
     )
@@ -93,6 +106,8 @@ async fn start_provisioner(state: AppState) -> SocketAddr {
         state.webhook_verifier.clone(),
         state.audit_log.clone(),
         state.provisioning.clone(),
+        state.b2c.clone(),
+        state.capability_verifier.clone(),
     );
 
     tokio::spawn(async move {

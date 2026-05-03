@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::{
-    audit::AuditLog, matrix::MatrixRegistry, provisioning::ProvisioningService,
-    webhook::WebhookVerifier,
+    audit::AuditLog, b2c::B2cService, capability::CapabilityVerifier, matrix::MatrixRegistry,
+    provisioning::ProvisioningService, webhook::WebhookVerifier,
 };
 
 /// Shared application state passed to every handler.
@@ -35,6 +35,10 @@ pub struct AppState {
     pub audit_log: AuditLog,
     /// License-event provisioning workflows.
     pub provisioning: ProvisioningService,
+    /// B2C end-customer provisioning workflows.
+    pub b2c: B2cService,
+    /// Verifier for capability tokens (b2c API auth).
+    pub capability_verifier: CapabilityVerifier,
 }
 
 /// Query parameters every AS endpoint receives. The homeserver always passes

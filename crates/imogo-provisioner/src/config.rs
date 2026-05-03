@@ -35,10 +35,12 @@ pub struct Config {
     /// Database configuration (audit log and nonce cache).
     #[serde(default)]
     pub db: DbConfig,
-    /// Provisioning policy: which homeserver receives B2B accounts, who is
-    /// invited to support rooms, what tiers are allowed.
+    /// Provisioning policy (B2B account lifecycle).
     #[serde(default)]
     pub provisioning: ProvisioningConfig,
+    /// B2C end-customer policy (per-invoice rooms, QR tokens, guest accounts).
+    #[serde(default)]
+    pub b2c: B2cConfig,
 }
 
 /// HTTP server settings.
@@ -175,6 +177,34 @@ impl Default for ProvisioningConfig {
             b2b_homeserver: "b2b".to_string(),
             support_invitees: Vec::new(),
             allowed_tiers: default_tiers(),
+        }
+    }
+}
+
+/// B2C end-customer policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct B2cConfig {
+    /// Logical homeserver name for the open B2C server. Must match a key in
+    /// [`MatrixConfig::homeservers`].
+    pub b2c_homeserver: String,
+    /// Default TTL for new QR tokens, in days.
+    pub default_qr_token_ttl_days: i64,
+    /// Maximum TTL the API will accept, in days.
+    pub max_qr_token_ttl_days: i64,
+    /// Maximum guest index per room (cap on `next_guest_index`).
+    pub guest_index_max: u32,
+    /// Base URL prefix for the public redeem page (used to build `qr_url`).
+    pub public_redeem_base_url: String,
+}
+
+impl Default for B2cConfig {
+    fn default() -> Self {
+        Self {
+            b2c_homeserver: "b2c".to_string(),
+            default_qr_token_ttl_days: 90,
+            max_qr_token_ttl_days: 365,
+            guest_index_max: 999,
+            public_redeem_base_url: "https://rechnung.imogo.de/r".to_string(),
         }
     }
 }

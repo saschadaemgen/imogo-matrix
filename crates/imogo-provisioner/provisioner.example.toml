@@ -50,6 +50,14 @@ nonce_ttl_secs = 600
 path = "./imogo-provisioner.db"
 max_connections = 5
 
+# B2C end-customer policy.
+[b2c]
+b2c_homeserver = "b2c"
+default_qr_token_ttl_days = 90
+max_qr_token_ttl_days = 365
+guest_index_max = 999
+public_redeem_base_url = "https://rechnung.imogo.de/r"
+
 # Provisioning policy: which homeserver receives B2B accounts, who is invited
 # into every newly created support room, what tiers are allowed.
 [provisioning]

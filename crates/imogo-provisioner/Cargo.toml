@@ -103,6 +103,10 @@ data-encoding = "2"
 # URL encoding for path parameters in tuwunel calls (room ids, user ids)
 urlencoding = "2"
 
+# JWT for capability tokens (b2c provisioning API). EdDSA matches the
+# Ed25519 family already used for webhook signatures.
+jsonwebtoken = { version = "9", default-features = false }
+
 [dev-dependencies]
 # Testing
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "test-util"] }

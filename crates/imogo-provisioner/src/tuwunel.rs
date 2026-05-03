@@ -299,6 +299,77 @@ impl TuwunelClient {
         check_ok(resp).await
     }
 
+    /// Invite a user into a room (acting as the AS bot).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuwunelError::Api`] if the homeserver rejects the call.
+    #[instrument(skip(self), fields(room_id = %room_id, user_id = %user_id))]
+    pub async fn invite_user(&self, room_id: &str, user_id: &str) -> Result<(), TuwunelError> {
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/invite",
+            self.homeserver_url,
+            urlencoding::encode(room_id)
+        );
+        let body = json!({"user_id": user_id});
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.as_token)
+            .json(&body)
+            .send()
+            .await?;
+        check_ok(resp).await
+    }
+
+    /// Issue a Matrix access token for the given user via the AS login flow.
+    /// Returns the access token string. The caller is responsible for
+    /// handing it to the user; we never persist it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuwunelError::Api`] if login fails or the response is
+    /// malformed.
+    #[instrument(skip(self), fields(user_id = %user_id))]
+    pub async fn login_appservice(&self, user_id: &str) -> Result<String, TuwunelError> {
+        let url = format!("{}/_matrix/client/v3/login", self.homeserver_url);
+        let body = json!({
+            "type": "m.login.application_service",
+            "identifier": {
+                "type": "m.id.user",
+                "user": user_id,
+            },
+        });
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.as_token)
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(TuwunelError::Api {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| TuwunelError::Api {
+                status: status.as_u16(),
+                body: format!("invalid json: {e}"),
+            })?;
+        let access_token = parsed
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TuwunelError::Api {
+                status: status.as_u16(),
+                body: "missing access_token in response".to_string(),
+            })?;
+        Ok(access_token.to_string())
+    }
+
     /// Deactivate a user account. The account becomes unable to log in.
     /// Existing rooms keep the account as a member, but it cannot post or
     /// be reactivated through normal flows.

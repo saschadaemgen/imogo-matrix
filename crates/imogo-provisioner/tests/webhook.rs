@@ -2,20 +2,6 @@
 // Copyright (C) 2026 Sascha Daemgen, IT and More Systems
 
 //! Integration tests for the license webhook endpoint.
-//!
-//! We generate a fresh Ed25519 keypair at test startup, inject the public key
-//! into the provisioner's `KeyRegistry`, then exercise sign-then-verify
-//! against the live HTTP endpoint. Each test gets its own temporary `SQLite`
-//! database via tempfile so they cannot interfere via the persistent nonce
-//! store.
-//!
-//! After Briefing-02c-3 the webhook handler runs the full provisioning
-//! pipeline. Tests here mock the homeserver's `/_matrix/client/versions`
-//! endpoint (so `MatrixRegistry::ping` succeeds) but NOT the `/register` or
-//! `/createRoom` endpoints. A request that gets past verification therefore
-//! reaches the provisioning service and fails the Tuwunel call with HTTP
-//! 502 + `tuwunel_error`. That is the expected outcome for the
-//! `webhook_accepts_valid_signature` and `webhook_rejects_replay` tests.
 
 #![cfg(feature = "dev-keys")]
 
@@ -30,10 +16,12 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use imogo_provisioner::{
     accounts::AccountsRepo,
     audit::AuditLog,
-    config::{DbConfig, HomeserverConfig, ProvisioningConfig},
+    b2c::B2cService,
+    capability::CapabilityVerifier,
+    config::{B2cConfig, DbConfig, HomeserverConfig, ProvisioningConfig},
     db,
     http::{appservice::AppState, router},
-    keys::{KeyRegistry, RegisteredKey},
+    keys::{CapabilityKeyRegistry, KeyRegistry, RegisteredKey},
     matrix::MatrixRegistry,
     nonce_store::NonceStore,
     provisioning::ProvisioningService,
@@ -89,7 +77,7 @@ async fn build_state_with_key(public_key: VerifyingKey) -> (AppState, TempDir, M
     let pool = db::open_pool(&db_cfg).await.expect("db open");
     let nonce_store = NonceStore::new(pool.clone(), 600);
     let audit_log = AuditLog::new(pool.clone());
-    let accounts = AccountsRepo::new(pool);
+    let accounts = AccountsRepo::new(pool.clone());
 
     let mut keys = KeyRegistry::default();
     keys.insert(RegisteredKey {
@@ -125,12 +113,24 @@ async fn build_state_with_key(public_key: VerifyingKey) -> (AppState, TempDir, M
         reqwest::Client::new(),
     );
 
+    let capability_verifier =
+        CapabilityVerifier::new(CapabilityKeyRegistry::default(), pool.clone());
+    let b2c = B2cService::new(
+        pool,
+        audit_log.clone(),
+        registry.clone(),
+        B2cConfig::default(),
+        reqwest::Client::new(),
+    );
+
     (
         AppState {
             registry,
             webhook_verifier: verifier,
             audit_log,
             provisioning,
+            b2c,
+            capability_verifier,
         },
         tmp,
         mock,
@@ -147,6 +147,8 @@ async fn start_server(state: AppState) -> SocketAddr {
         state.webhook_verifier.clone(),
         state.audit_log.clone(),
         state.provisioning.clone(),
+        state.b2c.clone(),
+        state.capability_verifier.clone(),
     );
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
@@ -176,7 +178,6 @@ fn sign(key: &SigningKey, method: &str, path: &str, ts: i64, nonce: &str, body: 
     STANDARD_NO_PAD.encode(sig.to_bytes())
 }
 
-/// Build a valid `LicenseActivatedPayload` JSON body.
 fn valid_activation_body(license_id: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "event_type": "license.activated",
@@ -210,8 +211,6 @@ async fn webhook_accepts_valid_signature() {
         .await
         .expect("request");
 
-    // Mock homeserver does not implement /register, so the provisioning
-    // layer reports a Tuwunel error after verification has already succeeded.
     assert_eq!(resp.status(), 502);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "tuwunel_error");
@@ -273,7 +272,7 @@ async fn webhook_rejects_old_timestamp() {
     let addr = start_server(state).await;
 
     let body = b"{}".to_vec();
-    let ts = now_unix() - 3600; // 1h old, well outside the 300s skew
+    let ts = now_unix() - 3600;
     let nonce = "n-0003-cccc";
     let signature = sign(&signing_key, "POST", "/webhook/license", ts, nonce, &body);
 
@@ -304,8 +303,6 @@ async fn webhook_rejects_replay() {
 
     let client = reqwest::Client::new();
 
-    // First request: signature verified, nonce inserted, then Tuwunel fails
-    // because the mock homeserver does not implement /register.
     let resp1 = client
         .post(format!("http://{addr}/webhook/license"))
         .header(HEADER_TIMESTAMP, ts.to_string())
@@ -318,7 +315,6 @@ async fn webhook_rejects_replay() {
         .expect("request 1");
     assert_eq!(resp1.status(), 502);
 
-    // Second identical request: nonce already recorded -> replay rejected.
     let resp2 = client
         .post(format!("http://{addr}/webhook/license"))
         .header(HEADER_TIMESTAMP, ts.to_string())
@@ -359,7 +355,6 @@ async fn webhook_rejects_unknown_key_id() {
 
 #[tokio::test]
 async fn webhook_rejects_wrong_signing_key() {
-    // Generate two different keys; sign with one, verify with the other.
     let real_key = make_signing_key();
     let imposter_key = make_signing_key();
     let (state, _tmp, _mock) = build_state_with_key(real_key.verifying_key()).await;
@@ -393,7 +388,6 @@ async fn webhook_rejects_path_mismatch() {
     let body = b"{}".to_vec();
     let ts = now_unix();
     let nonce = "n-0007-gggg";
-    // Sign for one path, send to another.
     let signature = sign(&signing_key, "POST", "/some/other/path", ts, nonce, &body);
 
     let resp = reqwest::Client::new()

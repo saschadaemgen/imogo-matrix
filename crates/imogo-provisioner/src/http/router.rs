@@ -10,25 +10,30 @@ use axum::{
 
 use super::{
     appservice::{self, AppState},
-    health, webhook,
+    b2c as b2c_handler, health, webhook,
 };
 use crate::{
-    audit::AuditLog, matrix::MatrixRegistry, provisioning::ProvisioningService,
-    webhook::WebhookVerifier,
+    audit::AuditLog, b2c::B2cService, capability::CapabilityVerifier, matrix::MatrixRegistry,
+    provisioning::ProvisioningService, webhook::WebhookVerifier,
 };
 
 /// Build the full router with shared application state.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     registry: MatrixRegistry,
     webhook_verifier: WebhookVerifier,
     audit_log: AuditLog,
     provisioning: ProvisioningService,
+    b2c: B2cService,
+    capability_verifier: CapabilityVerifier,
 ) -> Router {
     let state = AppState {
         registry,
         webhook_verifier,
         audit_log,
         provisioning,
+        b2c,
+        capability_verifier,
     };
 
     Router::new()
@@ -47,5 +52,7 @@ pub fn build(
             get(appservice::room_exists),
         )
         .route("/webhook/license", post(webhook::license_webhook))
+        .route("/v1/b2c/rooms", post(b2c_handler::create_room))
+        .route("/v1/b2c/redeem", post(b2c_handler::redeem))
         .with_state(state)
 }

@@ -10,6 +10,8 @@
 
 pub mod accounts;
 pub mod audit;
+pub mod b2c;
+pub mod capability;
 pub mod config;
 pub mod db;
 pub mod error;
