@@ -5,18 +5,21 @@
 
 use axum::{
     Router,
-    routing::{get, put},
+    routing::{get, post, put},
 };
 
 use super::{
     appservice::{self, AppState},
-    health,
+    health, webhook,
 };
-use crate::matrix::MatrixRegistry;
+use crate::{matrix::MatrixRegistry, webhook::WebhookVerifier};
 
 /// Build the full router with shared application state.
-pub fn build(registry: MatrixRegistry) -> Router {
-    let state = AppState { registry };
+pub fn build(registry: MatrixRegistry, webhook_verifier: WebhookVerifier) -> Router {
+    let state = AppState {
+        registry,
+        webhook_verifier,
+    };
 
     Router::new()
         .route("/healthz", get(health::healthz))
@@ -33,5 +36,6 @@ pub fn build(registry: MatrixRegistry) -> Router {
             "/_matrix/app/v1/{hs_name}/rooms/{room_alias}",
             get(appservice::room_exists),
         )
+        .route("/webhook/license", post(webhook::license_webhook))
         .with_state(state)
 }

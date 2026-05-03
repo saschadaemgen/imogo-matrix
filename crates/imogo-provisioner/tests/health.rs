@@ -9,7 +9,9 @@ use std::{collections::BTreeMap, net::SocketAddr};
 use imogo_provisioner::{
     config::HomeserverConfig,
     http::{appservice::AppState, router},
+    keys::KeyRegistry,
     matrix::MatrixRegistry,
+    webhook::WebhookVerifier,
 };
 use serde_json::json;
 use url::Url;
@@ -51,7 +53,8 @@ async fn start_provisioner(registry: MatrixRegistry) -> SocketAddr {
         .expect("bind ephemeral port");
     let addr: SocketAddr = listener.local_addr().expect("local addr");
 
-    let app = router::build(registry);
+    let webhook_verifier = WebhookVerifier::new(KeyRegistry::default(), 1024, 300);
+    let app = router::build(registry, webhook_verifier);
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");

@@ -6,6 +6,7 @@
 pub mod appservice;
 pub mod health;
 pub mod router;
+pub mod webhook;
 
 use std::time::Duration;
 
@@ -14,7 +15,10 @@ use tokio::signal;
 use tower_http::timeout::TimeoutLayer;
 use tracing::info;
 
-use crate::{config::Config, error::Error, matrix::MatrixRegistry};
+use crate::{
+    config::Config, error::Error, keys::KeyRegistry, matrix::MatrixRegistry,
+    webhook::WebhookVerifier,
+};
 
 /// Run the HTTP server until a shutdown signal is received. The Matrix
 /// registry is built before the listener accepts connections so a misconfigured
@@ -37,7 +41,18 @@ pub async fn run(config: Config) -> Result<(), Error> {
         "matrix homeservers initialised"
     );
 
-    let app = router::build(registry)
+    let keys = KeyRegistry::with_compiled_in_keys();
+    info!(
+        registered_keys = keys.len(),
+        "webhook key registry initialised"
+    );
+    let webhook_verifier = WebhookVerifier::new(
+        keys,
+        config.webhook.nonce_cache_capacity,
+        config.webhook.max_timestamp_skew_secs,
+    );
+
+    let app = router::build(registry, webhook_verifier)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

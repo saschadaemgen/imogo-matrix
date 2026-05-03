@@ -34,3 +34,10 @@ appservice_id = "imogo-provisioner"
 as_token = "REPLACE_ME_WITH_REAL_AS_TOKEN"
 hs_token = "REPLACE_ME_WITH_REAL_HS_TOKEN"
 sender_localpart = "imogo-provisioner"
+
+# Inbound webhook configuration (license server).
+[webhook]
+# Webhook requests outside this many seconds from current time are rejected.
+max_timestamp_skew_secs = 300
+# How many recently seen nonces to remember for replay protection.
+nonce_cache_capacity = 10000

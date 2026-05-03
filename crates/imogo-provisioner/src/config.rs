@@ -30,6 +30,9 @@ pub struct Config {
     /// or `b2c` used in logs and as the URL prefix for incoming AS endpoints.
     #[serde(default)]
     pub matrix: MatrixConfig,
+    /// Inbound webhook configuration (license server calls).
+    #[serde(default)]
+    pub webhook: WebhookConfig,
 }
 
 /// HTTP server settings.
@@ -92,6 +95,24 @@ pub struct HomeserverConfig {
     pub hs_token: String,
     /// The localpart used by the AS bot itself, e.g. `imogo-provisioner`.
     pub sender_localpart: String,
+}
+
+/// Webhook configuration (incoming calls from the imogo license server).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// Maximum allowed clock skew in seconds for inbound webhook timestamps.
+    pub max_timestamp_skew_secs: i64,
+    /// How many nonces to remember for replay protection.
+    pub nonce_cache_capacity: usize,
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            max_timestamp_skew_secs: 300,
+            nonce_cache_capacity: 10_000,
+        }
+    }
 }
 
 impl Config {

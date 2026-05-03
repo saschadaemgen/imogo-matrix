@@ -19,13 +19,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::matrix::MatrixRegistry;
+use crate::{matrix::MatrixRegistry, webhook::WebhookVerifier};
 
 /// Shared application state passed to every handler.
 #[derive(Clone, Debug)]
 pub struct AppState {
     /// Registry of configured Matrix homeservers.
     pub registry: MatrixRegistry,
+    /// Verifier for inbound license-server webhook calls.
+    pub webhook_verifier: WebhookVerifier,
 }
 
 /// Query parameters every AS endpoint receives. The homeserver always passes

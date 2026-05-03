@@ -11,8 +11,10 @@
 pub mod config;
 pub mod error;
 pub mod http;
+pub mod keys;
 pub mod matrix;
 pub mod telemetry;
+pub mod webhook;
 
 /// Crate version, taken from Cargo.toml at compile time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
