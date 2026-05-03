@@ -8,10 +8,12 @@
 //!
 //! 1. Verify signature/timestamp/nonce -> 401 on failure.
 //! 2. Append `webhook.license.received` audit entry -> 500 on failure.
-//! 3. Parse body as `LicenseActivatedPayload` -> 400 on failure.
-//! 4. Check `event_type == "license.activated"` -> 400 otherwise.
-//! 5. Hand off to [`ProvisioningService`](crate::provisioning::ProvisioningService);
-//!    map [`ProvisioningError`] to the appropriate status code (400/500/502).
+//! 3. Parse a generic envelope to read `event_type` -> 400 on failure.
+//! 4. Dispatch by `event_type` to the matching `LicenseXyzPayload`,
+//!    parse it -> 400 on parse failure, 400 for unsupported event types.
+//! 5. Call the appropriate handler on
+//!    [`ProvisioningService`](crate::provisioning::ProvisioningService); map
+//!    [`ProvisioningError`] to the appropriate status code.
 
 use axum::{
     Json,
@@ -20,22 +22,27 @@ use axum::{
     http::{HeaderMap, StatusCode, Uri},
     response::IntoResponse,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use super::appservice::AppState;
 use crate::{
     audit::NewAuditEntry,
-    provisioning::{ActivationOutcome, LicenseActivatedPayload, ProvisioningError},
+    provisioning::{
+        ActivationOutcome, LicenseActivatedPayload, LicenseDeactivatedPayload,
+        LicenseExpiredPayload, LicenseTierChangedPayload, LifecycleOutcome, ProvisioningError,
+    },
     webhook::{
-        HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, WebhookVerifyError,
+        HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, VerifiedRequest,
+        WebhookVerifyError,
     },
 };
 
 /// Hard cap on the payload bytes stored in the audit log.
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
-/// Successful response payload returned with HTTP 201 (created) or 200 (already existed).
+/// Successful activation response. Returned with HTTP 201 (created) or 200
+/// (already existed).
 #[derive(Debug, Serialize)]
 pub struct WebhookAck {
     /// `"activated"` for newly created accounts, `"existed"` for idempotent replays.
@@ -50,6 +57,21 @@ pub struct WebhookAck {
     pub outcome: ActivationOutcome,
 }
 
+/// Successful lifecycle response. Returned with HTTP 200.
+#[derive(Debug, Serialize)]
+pub struct LifecycleAck {
+    /// `"processed"` for state-changing calls, `"idempotent"` for no-ops.
+    pub status: &'static str,
+    /// Echoes back the verified `key_id`.
+    pub key_id: String,
+    /// Echoes back the accepted nonce.
+    pub nonce: String,
+    /// Auto-increment id of the audit entry produced for this call.
+    pub audit_id: i64,
+    /// Account record and state-transition labels.
+    pub outcome: LifecycleOutcome,
+}
+
 /// Generic error payload.
 #[derive(Debug, Serialize)]
 pub struct WebhookError {
@@ -58,6 +80,12 @@ pub struct WebhookError {
     /// Optional human-readable diagnostic, kept short.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Generic envelope used to read `event_type` for dispatch.
+#[derive(Deserialize)]
+struct EventEnvelope {
+    event_type: String,
 }
 
 /// `POST /webhook/license`
@@ -145,93 +173,154 @@ pub async fn license_webhook(
         }
     };
 
-    // Step 3: parse payload.
-    let payload: LicenseActivatedPayload = match serde_json::from_slice(&body) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(error = %e, "license payload parse error");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(WebhookError {
-                    error: "invalid_payload",
-                    detail: Some(e.to_string()),
-                }),
-            )
-                .into_response();
-        }
+    // Step 3: parse envelope.
+    let envelope: EventEnvelope = match serde_json::from_slice(&body) {
+        Ok(e) => e,
+        Err(e) => return bad_request(e.to_string()),
     };
 
-    // Step 4: event_type gate.
-    if payload.event_type != "license.activated" {
-        return (
+    // Step 4 + 5: dispatch.
+    match envelope.event_type.as_str() {
+        "license.activated" => match serde_json::from_slice::<LicenseActivatedPayload>(&body) {
+            Ok(p) => match state.provisioning.handle_license_activated(p).await {
+                Ok(outcome) => activation_response(outcome, verified, audit_id),
+                Err(e) => provisioning_error_response(&e),
+            },
+            Err(e) => bad_request(e.to_string()),
+        },
+        "license.expired" => match serde_json::from_slice::<LicenseExpiredPayload>(&body) {
+            Ok(p) => match state.provisioning.handle_license_expired(p).await {
+                Ok(outcome) => lifecycle_response(outcome, verified, audit_id),
+                Err(e) => provisioning_error_response(&e),
+            },
+            Err(e) => bad_request(e.to_string()),
+        },
+        "license.deactivated" => match serde_json::from_slice::<LicenseDeactivatedPayload>(&body) {
+            Ok(p) => match state.provisioning.handle_license_deactivated(p).await {
+                Ok(outcome) => lifecycle_response(outcome, verified, audit_id),
+                Err(e) => provisioning_error_response(&e),
+            },
+            Err(e) => bad_request(e.to_string()),
+        },
+        "license.tier_changed" => {
+            match serde_json::from_slice::<LicenseTierChangedPayload>(&body) {
+                Ok(p) => match state.provisioning.handle_license_tier_changed(p).await {
+                    Ok(outcome) => lifecycle_response(outcome, verified, audit_id),
+                    Err(e) => provisioning_error_response(&e),
+                },
+                Err(e) => bad_request(e.to_string()),
+            }
+        }
+        other => (
             StatusCode::BAD_REQUEST,
             Json(WebhookError {
                 error: "unsupported_event_type",
-                detail: Some(payload.event_type.clone()),
+                detail: Some(other.to_string()),
             }),
         )
-            .into_response();
-    }
-
-    // Step 5: provisioning.
-    match state.provisioning.handle_license_activated(payload).await {
-        Ok(outcome) => {
-            let status_code = if outcome.already_existed {
-                StatusCode::OK
-            } else {
-                StatusCode::CREATED
-            };
-            info!(
-                already_existed = outcome.already_existed,
-                license_id = outcome.account.license_id.as_str(),
-                matrix_user_id = outcome.account.matrix_user_id.as_str(),
-                "activation handled"
-            );
-            (
-                status_code,
-                Json(WebhookAck {
-                    status: if outcome.already_existed {
-                        "existed"
-                    } else {
-                        "activated"
-                    },
-                    key_id: verified.key_id,
-                    nonce: verified.nonce,
-                    audit_id,
-                    outcome,
-                }),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            warn!(error = %e, "activation failed");
-            let (status, code) = match e {
-                ProvisioningError::MissingLicenseId
-                | ProvisioningError::MissingCustomerName
-                | ProvisioningError::InvalidTier(_) => {
-                    (StatusCode::BAD_REQUEST, "validation_error")
-                }
-                ProvisioningError::HomeserverNotRegistered(_) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "homeserver_not_registered",
-                ),
-                ProvisioningError::Tuwunel(_) => (StatusCode::BAD_GATEWAY, "tuwunel_error"),
-                ProvisioningError::Account(_) | ProvisioningError::Audit(_) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
-                }
-            };
-            (
-                status,
-                Json(WebhookError {
-                    error: code,
-                    detail: Some(e.to_string()),
-                }),
-            )
-                .into_response()
-        }
+            .into_response(),
     }
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+fn bad_request(detail: String) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(WebhookError {
+            error: "invalid_payload",
+            detail: Some(detail),
+        }),
+    )
+        .into_response()
+}
+
+fn activation_response(
+    outcome: ActivationOutcome,
+    verified: VerifiedRequest,
+    audit_id: i64,
+) -> axum::response::Response {
+    let status_code = if outcome.already_existed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    info!(
+        already_existed = outcome.already_existed,
+        license_id = outcome.account.license_id.as_str(),
+        matrix_user_id = outcome.account.matrix_user_id.as_str(),
+        "activation handled"
+    );
+    (
+        status_code,
+        Json(WebhookAck {
+            status: if outcome.already_existed {
+                "existed"
+            } else {
+                "activated"
+            },
+            key_id: verified.key_id,
+            nonce: verified.nonce,
+            audit_id,
+            outcome,
+        }),
+    )
+        .into_response()
+}
+
+fn lifecycle_response(
+    outcome: LifecycleOutcome,
+    verified: VerifiedRequest,
+    audit_id: i64,
+) -> axum::response::Response {
+    info!(
+        already_in_target_state = outcome.already_in_target_state,
+        license_id = outcome.account.license_id.as_str(),
+        previous_state = outcome.previous_state.as_str(),
+        new_state = outcome.new_state.as_str(),
+        "lifecycle event handled"
+    );
+    (
+        StatusCode::OK,
+        Json(LifecycleAck {
+            status: if outcome.already_in_target_state {
+                "idempotent"
+            } else {
+                "processed"
+            },
+            key_id: verified.key_id,
+            nonce: verified.nonce,
+            audit_id,
+            outcome,
+        }),
+    )
+        .into_response()
+}
+
+fn provisioning_error_response(e: &ProvisioningError) -> axum::response::Response {
+    let (status, code) = match e {
+        ProvisioningError::AccountNotFound(_) => (StatusCode::CONFLICT, "account_not_found"),
+        ProvisioningError::MissingLicenseId
+        | ProvisioningError::MissingCustomerName
+        | ProvisioningError::InvalidTier(_) => (StatusCode::BAD_REQUEST, "validation_error"),
+        ProvisioningError::HomeserverNotRegistered(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "homeserver_not_registered",
+        ),
+        ProvisioningError::Tuwunel(_) => (StatusCode::BAD_GATEWAY, "tuwunel_error"),
+        ProvisioningError::Account(_) | ProvisioningError::Audit(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        }
+    };
+    warn!(error = %e, "provisioning error response");
+    (
+        status,
+        Json(WebhookError {
+            error: code,
+            detail: Some(e.to_string()),
+        }),
+    )
+        .into_response()
 }

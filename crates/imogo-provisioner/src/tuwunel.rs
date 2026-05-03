@@ -5,8 +5,9 @@
 //! application-service mode (authenticating with the AS token).
 //!
 //! We do not rely on the high-level matrix-sdk for these calls because the
-//! AS-specific operations (create user, send-as-user) are not part of the
-//! standard client SDK. Calls are simple enough to issue directly via reqwest.
+//! AS-specific operations (create user, send-as-user, deactivate) are not
+//! part of the standard client SDK. Calls are simple enough to issue
+//! directly via reqwest.
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -246,6 +247,85 @@ impl TuwunelClient {
             room_id: room_id.to_string(),
             room_alias,
         })
+    }
+
+    /// Replace the power levels of a room. Sends `m.room.power_levels` as a
+    /// state event using the configured AS token.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuwunelError::Api`] if the homeserver rejects the call.
+    #[instrument(skip(self, power_levels), fields(room_id = %room_id))]
+    pub async fn update_power_levels(
+        &self,
+        room_id: &str,
+        power_levels: &PowerLevels,
+    ) -> Result<(), TuwunelError> {
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/state/m.room.power_levels",
+            self.homeserver_url,
+            urlencoding::encode(room_id)
+        );
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&self.as_token)
+            .json(power_levels)
+            .send()
+            .await?;
+        check_ok(resp).await
+    }
+
+    /// Replace the room topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuwunelError::Api`] if the homeserver rejects the call.
+    #[instrument(skip(self), fields(room_id = %room_id))]
+    pub async fn update_room_topic(&self, room_id: &str, topic: &str) -> Result<(), TuwunelError> {
+        let url = format!(
+            "{}/_matrix/client/v3/rooms/{}/state/m.room.topic",
+            self.homeserver_url,
+            urlencoding::encode(room_id)
+        );
+        let body = json!({ "topic": topic });
+        let resp = self
+            .http
+            .put(&url)
+            .bearer_auth(&self.as_token)
+            .json(&body)
+            .send()
+            .await?;
+        check_ok(resp).await
+    }
+
+    /// Deactivate a user account. The account becomes unable to log in.
+    /// Existing rooms keep the account as a member, but it cannot post or
+    /// be reactivated through normal flows.
+    ///
+    /// Tuwunel implements the Synapse admin API for compatibility, hence
+    /// the `_synapse/admin/v1/deactivate` path. If a future Tuwunel release
+    /// moves this to a different URL, adapt at the call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TuwunelError::Api`] if the homeserver rejects the call.
+    #[instrument(skip(self), fields(user_id = %user_id))]
+    pub async fn deactivate_user(&self, user_id: &str) -> Result<(), TuwunelError> {
+        let url = format!(
+            "{}/_synapse/admin/v1/deactivate/{}",
+            self.homeserver_url,
+            urlencoding::encode(user_id)
+        );
+        let body = json!({ "erase": false });
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.as_token)
+            .json(&body)
+            .send()
+            .await?;
+        check_ok(resp).await
     }
 }
 

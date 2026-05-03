@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Sascha Daemgen, IT and More Systems
 
-//! Account record persistence: maps license IDs to stable Matrix identities.
+//! Account record persistence: maps license IDs to stable Matrix identities,
+//! tracks lifecycle state.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,45 @@ pub enum AccountError {
     Db(#[from] sqlx::Error),
 }
 
-/// Stable account record: maps a license id to a Matrix identity and the
-/// support room created at activation.
+/// Lifecycle state of an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountState {
+    /// Full access. The default for newly activated accounts.
+    Active,
+    /// Read-only after license expiry. Customer can read but not write.
+    ReadOnly,
+    /// Login is disabled and the account cannot post.
+    Deactivated,
+}
+
+impl AccountState {
+    /// Stable lower-snake-case label used in the database and the audit log.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::ReadOnly => "read_only",
+            Self::Deactivated => "deactivated",
+        }
+    }
+}
+
+impl std::str::FromStr for AccountState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Self::Active),
+            "read_only" => Ok(Self::ReadOnly),
+            "deactivated" => Ok(Self::Deactivated),
+            other => Err(format!("invalid account state: {other}")),
+        }
+    }
+}
+
+/// Stable account record: maps a license id to a Matrix identity, the
+/// support room created at activation, and the current lifecycle state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::module_name_repetitions)]
 pub struct AccountRecord {
@@ -36,11 +74,18 @@ pub struct AccountRecord {
     pub display_name: String,
     /// Tier label as supplied by the license server.
     pub tier: String,
+    /// Lifecycle state.
+    pub state: AccountState,
     /// When the record was created.
     pub created_at: DateTime<Utc>,
+    /// When the account transitioned to `read_only`, if at all.
+    pub expired_at: Option<DateTime<Utc>>,
+    /// When the account was deactivated, if at all.
+    pub deactivated_at: Option<DateTime<Utc>>,
 }
 
-/// New account to insert. The `created_at` timestamp is filled in by the
+/// New account to insert. The `created_at` timestamp and lifecycle state
+/// (`active`, no `expired_at`, no `deactivated_at`) are filled in by the
 /// repository.
 #[derive(Debug, Clone)]
 #[allow(clippy::module_name_repetitions)]
@@ -92,7 +137,8 @@ impl AccountsRepo {
     ) -> Result<Option<AccountRecord>, AccountError> {
         let row: Option<AccountRow> = sqlx::query_as(
             "SELECT license_id, matrix_uuid, matrix_homeserver, matrix_user_id, \
-                    support_room_id, display_name, tier, created_at \
+                    support_room_id, display_name, tier, state, created_at, \
+                    expired_at, deactivated_at \
              FROM accounts WHERE license_id = ?",
         )
         .bind(license_id)
@@ -103,7 +149,9 @@ impl AccountsRepo {
     }
 
     /// Insert a new account record. Fails with a unique-constraint violation
-    /// if `license_id` or `matrix_user_id` already exist.
+    /// if `license_id` or `matrix_user_id` already exist. State columns get
+    /// their schema defaults (`state = 'active'`, `expired_at = NULL`,
+    /// `deactivated_at = NULL`).
     ///
     /// # Errors
     ///
@@ -116,8 +164,9 @@ impl AccountsRepo {
         sqlx::query(
             "INSERT INTO accounts \
                 (license_id, matrix_uuid, matrix_homeserver, matrix_user_id, \
-                 support_room_id, display_name, tier, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 support_room_id, display_name, tier, created_at, state, \
+                 expired_at, deactivated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL)",
         )
         .bind(&new.license_id)
         .bind(&new.matrix_uuid)
@@ -138,8 +187,57 @@ impl AccountsRepo {
             support_room_id: new.support_room_id,
             display_name: new.display_name,
             tier: new.tier,
+            state: AccountState::Active,
             created_at: now,
+            expired_at: None,
+            deactivated_at: None,
         })
+    }
+
+    /// Mark an account as expired (read-only).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountError::Db`] on database errors.
+    pub async fn mark_expired(&self, license_id: &str) -> Result<(), AccountError> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        sqlx::query("UPDATE accounts SET state = 'read_only', expired_at = ? WHERE license_id = ?")
+            .bind(&now)
+            .bind(license_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Mark an account as deactivated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountError::Db`] on database errors.
+    pub async fn mark_deactivated(&self, license_id: &str) -> Result<(), AccountError> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        sqlx::query(
+            "UPDATE accounts SET state = 'deactivated', deactivated_at = ? WHERE license_id = ?",
+        )
+        .bind(&now)
+        .bind(license_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update the tier of an account.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountError::Db`] on database errors.
+    pub async fn update_tier(&self, license_id: &str, tier: &str) -> Result<(), AccountError> {
+        sqlx::query("UPDATE accounts SET tier = ? WHERE license_id = ?")
+            .bind(tier)
+            .bind(license_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -153,14 +251,27 @@ struct AccountRow {
     support_room_id: String,
     display_name: String,
     tier: String,
+    state: String,
     created_at: String,
+    expired_at: Option<String>,
+    deactivated_at: Option<String>,
 }
 
 impl AccountRow {
     fn into_record(self) -> Result<AccountRecord, AccountError> {
-        let created_at = DateTime::parse_from_rfc3339(&self.created_at)
-            .map_err(|e| AccountError::Db(sqlx::Error::Decode(Box::new(e))))?
-            .with_timezone(&Utc);
+        let parse_ts = |s: &str| -> Result<DateTime<Utc>, AccountError> {
+            DateTime::parse_from_rfc3339(s)
+                .map_err(|e| AccountError::Db(sqlx::Error::Decode(Box::new(e))))
+                .map(|d| d.with_timezone(&Utc))
+        };
+        let created_at = parse_ts(&self.created_at)?;
+        let expired_at = self.expired_at.as_deref().map(parse_ts).transpose()?;
+        let deactivated_at = self.deactivated_at.as_deref().map(parse_ts).transpose()?;
+        let state: AccountState = self
+            .state
+            .parse()
+            .map_err(|e: String| AccountError::Db(sqlx::Error::Decode(e.into())))?;
+
         Ok(AccountRecord {
             license_id: self.license_id,
             matrix_uuid: self.matrix_uuid,
@@ -169,7 +280,10 @@ impl AccountRow {
             support_room_id: self.support_room_id,
             display_name: self.display_name,
             tier: self.tier,
+            state,
             created_at,
+            expired_at,
+            deactivated_at,
         })
     }
 }

@@ -100,6 +100,9 @@ rand = "0.8"
 # Base32 encoding for matrix UUIDs (RFC 4648 lowercase, no padding)
 data-encoding = "2"
 
+# URL encoding for path parameters in tuwunel calls (room ids, user ids)
+urlencoding = "2"
+
 [dev-dependencies]
 # Testing
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "test-util"] }
