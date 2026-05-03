@@ -34,7 +34,7 @@ fn full_workflow_commands_round_trip() {
         }
     );
 
-    let mute = command::parse("!mod mute @bob:test 1h abkuehlung")
+    let mute = command::parse("!mod mute @bob:test 1h abkühlung")
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -42,7 +42,7 @@ fn full_workflow_commands_round_trip() {
         Command::Mute {
             user_id: "@bob:test".to_string(),
             duration_secs: 3600,
-            reason: Some("abkuehlung".to_string()),
+            reason: Some("abkühlung".to_string()),
         }
     );
 }

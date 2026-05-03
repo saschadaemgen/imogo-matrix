@@ -1,15 +1,15 @@
 # imogo Moderations-Bot
 
-Eigenstaendiger Application Service fuer die imogo-Community-Raeume auf B2B (`matrix.imogo.de`). Der Bot meldet sich beim Start einmal via `m.login.application_service` an, holt sich einen Access-Token, und laeuft danach als regulaerer Matrix-Client mit `restore_session` (Pull-AS-Architektur).
+Eigenständiger Application Service für die imogo-Community-Räume auf B2B (`matrix.imogo.de`). Der Bot meldet sich beim Start einmal via `m.login.application_service` an, holt sich einen Access-Token, und läuft danach als regulärer Matrix-Client mit `restore_session` (Pull-AS-Architektur).
 
 ## Trigger
 
-Befehle haben das Praefix `!mod`. Der Bot reagiert nur in Raeumen, die per `!mod aktivieren` aktiviert oder per Auto-Discovery (siehe Config `bot.auto_discover_alias_pattern`) eingetragen sind.
+Befehle haben das Präfix `!mod`. Der Bot reagiert nur in Räumen, die per `!mod aktivieren` aktiviert oder per Auto-Discovery (siehe Config `bot.auto_discover_alias_pattern`) eingetragen sind.
 
 ## Befehle
 
 ```
-!mod aktivieren [note]
+!mod aktivieren [hinweis]
 !mod deaktivieren
 !mod status
 
@@ -17,10 +17,10 @@ Befehle haben das Praefix `!mod`. Der Bot reagiert nur in Raeumen, die per `!mod
 !mod ban-word remove <wort>
 !mod ban-word list
 
-!mod kick @user[:server] [reason]
-!mod ban @user[:server] [reason]
+!mod kick @user[:server] [grund]
+!mod ban @user[:server] [grund]
 !mod unban @user[:server]
-!mod mute @user[:server] <dauer> [reason]
+!mod mute @user[:server] <dauer> [grund]
 !mod unmute @user[:server]
 
 !mod pin                      # als Reply auf eine Nachricht
@@ -29,15 +29,15 @@ Befehle haben das Praefix `!mod`. Der Bot reagiert nur in Raeumen, die per `!mod
 !mod help
 ```
 
-Dauer-Format fuer `mute`: `30s`, `5m`, `2h`, `1d`. Maximalwert aus Config `bot.max_mute_seconds`.
+Dauer-Format für `mute`: `30s`, `5m`, `2h`, `1d`. Maximalwert aus Config `bot.max_mute_seconds`.
 
 ## Power-Level-Schwellen
 
-Pro Befehl konfigurierbar in `[bot]`. Default: 50 fuer alle Befehle (`pl_kick`, `pl_ban`, `pl_mute`, `pl_pin`, `pl_word_admin`). Auto-Moderation greift NICHT bei Usern mit Power Level >= 100 (Admin-Schutz).
+Pro Befehl konfigurierbar in `[bot]`. Default: 50 für alle Befehle (`pl_kick`, `pl_ban`, `pl_mute`, `pl_pin`, `pl_word_admin`). Auto-Moderation greift NICHT bei Usern mit Power Level >= 100 (Admin-Schutz).
 
 ## Auto-Moderation
 
-Bei jeder Nachricht in einem aktivierten Raum wird die Nachricht gegen die Bann-Wort-Liste geprueft. Erste Matching-Aktion gemaess Severity:
+Bei jeder Nachricht in einem aktivierten Raum wird die Nachricht gegen die Bann-Wort-Liste geprüft. Erste Matching-Aktion gemäß Severity:
 
 - `redact`: Nachricht wird redacted
 - `warn`: Bot postet eine Warnung
@@ -47,7 +47,7 @@ Die Liste wird per `!mod ban-word add/remove/list` live editiert und in `data/mo
 
 ## Beispieldatei `data/banned_words.example.yaml`
 
-Die Datei wird vom Bot **nicht** gelesen. Sie dient nur als Vorlage und Erklaerung des YAML-Schemas, falls jemand eine Bulk-Import-Funktion nachruesten moechte.
+Die Datei wird vom Bot **nicht** gelesen. Sie dient nur als Vorlage und Erklärung des YAML-Schemas, falls jemand eine Bulk-Import-Funktion nachrüsten möchte.
 
 ## Konfiguration
 
@@ -64,7 +64,7 @@ Siehe `deploy/tuwunel/registration-imogo-moderator.yaml`. Sascha registriert den
 \`\`\`
 ```
 
-Tuwunel antwortet mit `as_token` und `hs_token`. Beide in den Passwort-Manager und das `as_token` zusaetzlich in die `mod-bot.toml`.
+Tuwunel antwortet mit `as_token` und `hs_token`. Beide in den Passwort-Manager und das `as_token` zusätzlich in die `mod-bot.toml`.
 
 ## Audit-Log
 

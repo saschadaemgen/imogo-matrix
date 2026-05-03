@@ -386,11 +386,11 @@ mod tests {
     #[test]
     fn mute_with_duration_and_reason() {
         assert_eq!(
-            parse_ok("!mod mute @bob:test 5m abkuehlung"),
+            parse_ok("!mod mute @bob:test 5m abkühlung"),
             Command::Mute {
                 user_id: "@bob:test".to_string(),
                 duration_secs: 300,
-                reason: Some("abkuehlung".to_string()),
+                reason: Some("abkühlung".to_string()),
             }
         );
     }

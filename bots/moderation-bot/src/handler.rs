@@ -37,7 +37,7 @@ use crate::{
     command::{self, Command},
     config::Config,
     error::ModError,
-    mute, pinned, power_level, rooms,
+    format, mute, pinned, power_level, rooms,
 };
 
 /// Shared application state passed to the matrix-sdk event handler.
@@ -446,15 +446,16 @@ async fn dispatch_command(
     let required_pl = required_pl_for(&state.config, &cmd);
     let sender_pl = power_level::current_power_level(room, &event.sender).await?;
     if sender_pl < required_pl {
-        return deny_low_power_level(state, room, &room_id, &actor, &cmd).await;
+        return deny_low_power_level(state, room, &room_id, &actor, &cmd, required_pl, sender_pl)
+            .await;
     }
 
     // Some commands also need the bot itself to have admin power.
     if cmd_needs_bot_power(&cmd) {
         let bot_pl = power_level::current_power_level(room, &state.bot_user_id).await?;
         if bot_pl < 50 {
-            let msg = "Ich brauche selbst Power Level 50 oder hoeher in diesem Raum, \
-                       bitte vom Raum-Admin setzen lassen.";
+            let msg = "Ich brauche selbst Power Level 50 oder höher in diesem Raum. \
+                       Bitte vom Raum-Admin setzen lassen.";
             let _ = room.send(RoomMessageEventContent::text_plain(msg)).await;
             return Ok(());
         }
@@ -483,21 +484,23 @@ async fn dispatch_command(
                 json!({ "note": note }),
             )
             .await?;
-            ack(room, "Raum aktiviert. Bot moderiert ab jetzt.").await;
+            let alias_match = alias_matches_pattern(state, room).await;
+            ack(room, activate_ack_text(alias_match)).await;
         }
         Command::Deactivate => {
             rooms::deactivate(&state.pool, room_id.as_str()).await?;
             audit_simple(state, &room_id, &actor, "room_deactivated", json!({})).await?;
             ack(
                 room,
-                "Raum deaktiviert. Bot ignoriert Befehle in diesem Raum bis zur Reaktivierung.",
+                "Raum deaktiviert. Bot ignoriert in diesem Raum bis zur erneuten \
+                 Aktivierung alle Befehle.",
             )
             .await;
         }
         Command::Status => {
             let active = rooms::is_active(&state.pool, room_id.as_str()).await?;
             let count = state.word_cache.len().await;
-            let msg = format!("Status: aktiv = {active}, Bann-Woerter = {count}.");
+            let msg = format!("Status: aktiv = {active}, Bann-Wörter = {count}.");
             ack(room, &msg).await;
         }
         Command::BanWordAdd {
@@ -519,7 +522,7 @@ async fn dispatch_command(
                 }),
             )
             .await?;
-            ack(room, &format!("Bann-Wort '{word}' hinzugefuegt.")).await;
+            ack(room, &format!("Bann-Wort \"{word}\" wurde hinzugefügt.")).await;
         }
         Command::BanWordRemove { word } => {
             banned_words::remove(&state.pool, &word).await?;
@@ -532,7 +535,7 @@ async fn dispatch_command(
                 json!({ "word": word }),
             )
             .await?;
-            ack(room, &format!("Bann-Wort '{word}' entfernt.")).await;
+            ack(room, &format!("Bann-Wort \"{word}\" wurde entfernt.")).await;
         }
         Command::BanWordList => {
             let list = banned_words::list(&state.pool).await?;
@@ -637,15 +640,22 @@ async fn deny_low_power_level(
     room_id: &OwnedRoomId,
     actor: &str,
     cmd: &Command,
+    required_pl: i64,
+    sender_pl: i64,
 ) -> Result<(), ModError> {
-    let msg = "Du hast nicht das noetige Power Level fuer diesen Befehl.";
-    let _ = room.send(RoomMessageEventContent::text_plain(msg)).await;
+    let msg =
+        format!("Dafür brauchst du Power Level {required_pl} oder höher. Du hast {sender_pl}.");
+    let _ = room.send(RoomMessageEventContent::text_plain(&msg)).await;
     audit_simple(
         state,
         room_id,
         actor,
         "command_denied_power_level",
-        json!({ "command": format!("{cmd:?}") }),
+        json!({
+            "command": format!("{cmd:?}"),
+            "required_pl": required_pl,
+            "sender_pl": sender_pl,
+        }),
     )
     .await
 }
@@ -693,6 +703,15 @@ impl UserAction {
             Self::Unban => "user_unbanned",
         }
     }
+
+    /// Deutsche Verb-Form für die Bestätigungs-Antwort.
+    fn user_verb(&self) -> &'static str {
+        match self {
+            Self::Kick => "Kick",
+            Self::Ban => "Ban",
+            Self::Unban => "Unban",
+        }
+    }
 }
 
 async fn handle_user_action(
@@ -715,7 +734,13 @@ async fn handle_user_action(
 
     if let Err(e) = result {
         warn!(error = %e, "user action failed");
-        ack(room, &format!("Aktion fehlgeschlagen: {e}")).await;
+        ack(
+            room,
+            &format!(
+                "Aktion fehlgeschlagen: {e}. Bitte versuche es erneut oder wende dich an einen Admin."
+            ),
+        )
+        .await;
         return Ok(());
     }
 
@@ -732,7 +757,8 @@ async fn handle_user_action(
         ),
     )
     .await?;
-    ack(room, &format!("{action_label} ausgefuehrt fuer {target}.")).await;
+    let verb = action.user_verb();
+    ack(room, &format!("{verb} für {target} ausgeführt.")).await;
     Ok(())
 }
 
@@ -748,14 +774,17 @@ async fn handle_mute(
         .map_err(|e| ModError::InvalidCommand(format!("invalid user id: {e}")))?;
 
     if duration_secs == 0 {
-        ack(room, "Dauer muss groesser als 0 sein.").await;
+        ack(room, "Dauer muss größer als null sein.").await;
         return Ok(());
     }
     let max = state.config.bot.max_mute_seconds;
     if duration_secs > max {
         ack(
             room,
-            &format!("Dauer ueberschreitet das Maximum von {max} Sekunden."),
+            &format!(
+                "Dauer überschreitet das Maximum von {} ({max} Sekunden).",
+                format::format_duration_de(max)
+            ),
         )
         .await;
         return Ok(());
@@ -776,15 +805,16 @@ async fn handle_mute(
             ack(
                 room,
                 &format!(
-                    "Mute fuer {target} fuer {duration_secs}s gesetzt. \
-                     Auto-Unmute bei Unix-Sekunde {expires_at}."
+                    "{target} für {} stummgeschaltet. Auto-Unmute um {}.",
+                    format::format_duration_de(duration_secs),
+                    format::format_unix_time_de(expires_at)
                 ),
             )
             .await;
         }
         Err(e) => {
             warn!(error = %e, target = %target, "mute failed");
-            ack(room, &format!("Mute fehlgeschlagen: {e}")).await;
+            ack(room, &format!("Mute fehlgeschlagen: {e}.")).await;
         }
     }
     Ok(())
@@ -807,13 +837,13 @@ async fn handle_unmute(
         Ok(()) => {
             ack(
                 room,
-                &format!("Unmute fuer {target} ausgefuehrt (PL {previous_pl} wiederhergestellt)."),
+                &format!("{target} wurde entstummt. Power Level {previous_pl} wiederhergestellt."),
             )
             .await;
         }
         Err(e) => {
             warn!(error = %e, target = %target, "unmute failed");
-            ack(room, &format!("Unmute fehlgeschlagen: {e}")).await;
+            ack(room, &format!("Unmute fehlgeschlagen: {e}.")).await;
         }
     }
     Ok(())
@@ -839,7 +869,7 @@ async fn handle_pin_or_unpin(
     let Some(target) = extract_reply_target(event) else {
         ack(
             room,
-            "Bitte als Reply auf eine Nachricht senden, deren Pin-Zustand sich aendern soll.",
+            "Bitte als Reply auf eine Nachricht senden, deren Pin-Zustand sich ändern soll.",
         )
         .await;
         audit_simple(
@@ -897,7 +927,7 @@ async fn handle_pin_or_unpin(
         }
         Err(e) => {
             warn!(error = %e, "pin/unpin failed");
-            ack(room, &format!("Pin/Unpin fehlgeschlagen: {e}")).await;
+            ack(room, &format!("Pin/Unpin fehlgeschlagen: {e}.")).await;
         }
     }
     Ok(())
@@ -912,37 +942,70 @@ fn extract_reply_target(event: &OriginalSyncRoomMessageEvent) -> Option<OwnedEve
 
 fn help_text() -> String {
     "**imogo-Moderations-Bot Befehle**\n\n\
-     - `!mod aktivieren [note]` - Bot in diesem Raum aktivieren\n\
-     - `!mod deaktivieren` - Bot deaktivieren\n\
-     - `!mod status` - Aktivierungs-Status\n\
+     **Raum-Verwaltung:**\n\
+     - `!mod aktivieren [hinweis]` Bot in diesem Raum aktivieren\n\
+     - `!mod deaktivieren` Bot deaktivieren\n\
+     - `!mod status` Aktivierungs-Status und Bann-Wort-Anzahl\n\n\
+     **Bann-Wörter:**\n\
      - `!mod ban-word add <wort> [substring|whole_word] [redact|warn|kick]`\n\
      - `!mod ban-word remove <wort>`\n\
-     - `!mod ban-word list`\n\
-     - `!mod kick @user[:server] [reason]`\n\
-     - `!mod ban @user[:server] [reason]`\n\
+     - `!mod ban-word list`\n\n\
+     **Moderations-Aktionen:**\n\
+     - `!mod kick @user[:server] [grund]`\n\
+     - `!mod ban @user[:server] [grund]`\n\
      - `!mod unban @user[:server]`\n\
-     - `!mod mute @user[:server] <dauer> [reason]` (z.B. 30s, 5m, 2h, 1d)\n\
-     - `!mod unmute @user[:server]`\n\
-     - `!mod pin` (als Reply auf eine Nachricht)\n\
-     - `!mod unpin` (als Reply auf eine Nachricht)\n\
-     - `!mod help`"
+     - `!mod mute @user[:server] <dauer> [grund]` (z.B. 30s, 5m, 2h, 1d)\n\
+     - `!mod unmute @user[:server]`\n\n\
+     **Nachricht fixieren:**\n\
+     - `!mod pin` als Reply auf eine Nachricht\n\
+     - `!mod unpin` als Reply auf eine Nachricht\n\n\
+     **Hilfe:**\n\
+     - `!mod help` diese Übersicht"
         .to_string()
 }
 
 fn format_banned_words(list: &[BannedWord]) -> String {
     use std::fmt::Write as _;
     if list.is_empty() {
-        return "Keine Bann-Woerter konfiguriert.".to_string();
+        return "Keine Bann-Wörter konfiguriert.".to_string();
     }
-    let mut out = String::from("**Bann-Woerter:**\n");
+    let mut out = String::from("**Bann-Wörter:**\n");
     for (i, bw) in list.iter().enumerate() {
         if i >= 50 {
-            out.push_str("(Liste gekuerzt nach 50 Eintraegen.)\n");
+            out.push_str("(Liste gekürzt nach 50 Einträgen.)\n");
             break;
         }
         let _ = writeln!(out, "- `{}` ({}, {})", bw.word, bw.match_mode, bw.severity);
     }
     out
+}
+
+/// Prüft, ob der kanonische Alias des Raums das Auto-Discovery-Pattern
+/// erfüllt. Liefert `false`, wenn der Raum keinen Alias hat oder das
+/// Pattern nicht passt; in diesen Fällen wird die manuelle Aktivierung
+/// nicht durch Auto-Discovery beim nächsten Bot-Start ergänzt.
+async fn alias_matches_pattern(state: &BotState, room: &Room) -> bool {
+    let Some(alias) = room.canonical_alias() else {
+        return false;
+    };
+    let regex = state.alias_regex.read().await;
+    regex.is_match(alias.as_str())
+}
+
+/// User-sichtbarer Bestätigungstext für `!mod aktivieren`. Variiert je
+/// nach Alias-Status, weil Auto-Discovery-Persistenz davon abhängt: ohne
+/// Alias-Match bleibt die Aktivierung in `moderation_active_rooms`
+/// erhalten, aber sie wird nicht durch Auto-Discovery erneut hergestellt
+/// (relevant nur bei `!mod deaktivieren` plus späterem Bot-Restart).
+fn activate_ack_text(alias_match: bool) -> &'static str {
+    if alias_match {
+        "Raum aktiviert. Bot moderiert ab jetzt. Dieser Raum wird auch bei \
+         Bot-Neustarts automatisch wieder aktiviert."
+    } else {
+        "Raum aktiviert. Bot moderiert ab jetzt. Hinweis: Dieser Raum hat keinen \
+         passenden Alias und wird bei Bot-Neustarts nicht automatisch entdeckt, \
+         aber die Aktivierung bleibt persistent."
+    }
 }
 
 #[cfg(test)]
@@ -982,10 +1045,30 @@ mod tests {
     }
 
     #[test]
+    fn help_text_is_grouped_with_section_headers() {
+        let h = help_text();
+        assert!(h.contains("**Raum-Verwaltung:**"));
+        assert!(h.contains("**Bann-Wörter:**"));
+        assert!(h.contains("**Moderations-Aktionen:**"));
+        assert!(h.contains("**Nachricht fixieren:**"));
+        assert!(h.contains("**Hilfe:**"));
+    }
+
+    #[test]
+    fn help_text_uses_correct_german_umlauts() {
+        let h = help_text();
+        assert!(h.contains("Bann-Wörter"));
+        assert!(h.contains("Übersicht"));
+        // Hard-block: keine Ersatzschreibweisen mehr im Help-Text.
+        assert!(!h.contains("Bann-Woerter"));
+        assert!(!h.contains("Uebersicht"));
+    }
+
+    #[test]
     fn format_banned_words_empty_and_full() {
         let empty: Vec<BannedWord> = Vec::new();
         let s = format_banned_words(&empty);
-        assert!(s.contains("Keine Bann-Woerter"));
+        assert!(s.contains("Keine Bann-Wörter"));
 
         let mut list = Vec::new();
         for i in 0..3 {
@@ -998,6 +1081,26 @@ mod tests {
         let s = format_banned_words(&list);
         assert!(s.contains("word0"));
         assert!(s.contains("word2"));
+        assert!(s.contains("**Bann-Wörter:**"));
+    }
+
+    #[test]
+    fn activate_ack_text_varies_with_alias_match() {
+        let with_match = activate_ack_text(true);
+        let without_match = activate_ack_text(false);
+        assert!(with_match.contains("automatisch wieder aktiviert"));
+        assert!(without_match.contains("kein"));
+        assert!(without_match.contains("Aktivierung bleibt persistent"));
+        // Hard-block Umlaut-Sanity:
+        assert!(!with_match.contains("fuer"));
+        assert!(!without_match.contains("fuer"));
+    }
+
+    #[test]
+    fn user_action_verbs_are_german_capitalized() {
+        assert_eq!(UserAction::Kick.user_verb(), "Kick");
+        assert_eq!(UserAction::Ban.user_verb(), "Ban");
+        assert_eq!(UserAction::Unban.user_verb(), "Unban");
     }
 
     #[test]

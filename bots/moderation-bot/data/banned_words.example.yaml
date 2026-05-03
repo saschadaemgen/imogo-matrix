@@ -1,13 +1,13 @@
-# Beispieldatei fuer die initiale Bann-Wort-Liste.
+# Beispieldatei für die initiale Bann-Wort-Liste.
 # DIESE DATEI WIRD VOM BOT NICHT GELESEN.
-# Sie dient nur als Vorlage und Erklaerung des Schemas.
+# Sie dient nur als Vorlage und Erklärung des Schemas.
 #
-# Live-Editing ueber Befehle im Raum:
+# Live-Editing über Befehle im Raum:
 #   !mod ban-word add <wort> [substring|whole_word] [redact|warn|kick]
 #   !mod ban-word remove <wort>
 #   !mod ban-word list
 #
-# Drei paedagogische Beispiele:
+# Drei pädagogische Beispiele:
 
 words:
   # Substring-Match, Nachricht wird redacted
