@@ -30,3 +30,11 @@ coverage/
 
 # Provisioner runtime config (real one is local, not committed)
 crates/imogo-provisioner/provisioner.toml
+
+# Provisioner runtime database (real one is local, not committed)
+crates/imogo-provisioner/imogo-provisioner.db
+crates/imogo-provisioner/imogo-provisioner.db-shm
+crates/imogo-provisioner/imogo-provisioner.db-wal
+
+# Test artifacts
+**/*.db-journal

@@ -5,7 +5,9 @@
 //!
 //! We generate a fresh Ed25519 keypair at test startup, inject the public key
 //! into the provisioner's `KeyRegistry`, then exercise sign-then-verify
-//! against the live HTTP endpoint.
+//! against the live HTTP endpoint. Each test gets its own temporary `SQLite`
+//! database via tempfile so they cannot interfere via the persistent nonce
+//! store.
 
 #![cfg(feature = "dev-keys")]
 
@@ -16,11 +18,15 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use imogo_provisioner::{
+    audit::AuditLog,
+    config::DbConfig,
+    db,
     http::{appservice::AppState, router},
     keys::{KeyRegistry, RegisteredKey},
     matrix::MatrixRegistry,
+    nonce_store::NonceStore,
     webhook::{
         HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, WebhookVerifier,
         build_signing_string,
@@ -28,6 +34,7 @@ use imogo_provisioner::{
 };
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
+use tempfile::TempDir;
 
 const TEST_KEY_ID: &str = "test-key-2026";
 
@@ -35,18 +42,40 @@ fn make_signing_key() -> SigningKey {
     SigningKey::generate(&mut OsRng)
 }
 
-fn make_verifier_with(public_key: ed25519_dalek::VerifyingKey) -> WebhookVerifier {
+fn leak_static_str(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
+async fn build_state_with_key(public_key: VerifyingKey) -> (AppState, TempDir) {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let db_cfg = DbConfig {
+        path: tmp.path().join("test.db").to_string_lossy().into_owned(),
+        max_connections: 2,
+    };
+    let pool = db::open_pool(&db_cfg).await.expect("db open");
+    let nonce_store = NonceStore::new(pool.clone(), 600);
+    let audit_log = AuditLog::new(pool);
+
     let mut keys = KeyRegistry::default();
     keys.insert(RegisteredKey {
         key_id: leak_static_str(TEST_KEY_ID),
         key: public_key,
         note: leak_static_str("integration test key"),
     });
-    WebhookVerifier::new(keys, 1024, 300)
-}
+    let verifier = WebhookVerifier::new(keys, nonce_store, 300);
 
-fn leak_static_str(s: &str) -> &'static str {
-    Box::leak(s.to_string().into_boxed_str())
+    let registry = MatrixRegistry::build(&BTreeMap::new())
+        .await
+        .expect("registry");
+
+    (
+        AppState {
+            registry,
+            webhook_verifier: verifier,
+            audit_log,
+        },
+        tmp,
+    )
 }
 
 async fn start_server(state: AppState) -> SocketAddr {
@@ -54,22 +83,16 @@ async fn start_server(state: AppState) -> SocketAddr {
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let app = router::build(state.registry.clone(), state.webhook_verifier.clone());
+    let app = router::build(
+        state.registry.clone(),
+        state.webhook_verifier.clone(),
+        state.audit_log.clone(),
+    );
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     addr
-}
-
-async fn make_state(verifier: WebhookVerifier) -> AppState {
-    let registry = MatrixRegistry::build(&BTreeMap::new())
-        .await
-        .expect("registry");
-    AppState {
-        registry,
-        webhook_verifier: verifier,
-    }
 }
 
 fn body_hash_hex(body: &[u8]) -> String {
@@ -96,8 +119,7 @@ fn sign(key: &SigningKey, method: &str, path: &str, ts: i64, nonce: &str, body: 
 #[tokio::test]
 async fn webhook_accepts_valid_signature() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body =
@@ -123,13 +145,14 @@ async fn webhook_accepts_valid_signature() {
     let json: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(json["status"], "verified");
     assert_eq!(json["key_id"], TEST_KEY_ID);
+    // 02c-2 introduces an audit_id in the response.
+    assert!(json["audit_id"].is_i64());
 }
 
 #[tokio::test]
 async fn webhook_rejects_missing_signature() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let resp = reqwest::Client::new()
@@ -145,8 +168,7 @@ async fn webhook_rejects_missing_signature() {
 #[tokio::test]
 async fn webhook_rejects_tampered_body() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let original = b"{\"type\":\"x\"}".to_vec();
@@ -179,8 +201,7 @@ async fn webhook_rejects_tampered_body() {
 #[tokio::test]
 async fn webhook_rejects_old_timestamp() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body = b"{}".to_vec();
@@ -205,8 +226,7 @@ async fn webhook_rejects_old_timestamp() {
 #[tokio::test]
 async fn webhook_rejects_replay() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body = b"{\"type\":\"replay-test\"}".to_vec();
@@ -246,8 +266,7 @@ async fn webhook_rejects_replay() {
 #[tokio::test]
 async fn webhook_rejects_unknown_key_id() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body = b"{}".to_vec();
@@ -274,8 +293,7 @@ async fn webhook_rejects_wrong_signing_key() {
     // Generate two different keys; sign with one, verify with the other.
     let real_key = make_signing_key();
     let imposter_key = make_signing_key();
-    let verifier = make_verifier_with(real_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(real_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body = b"{}".to_vec();
@@ -300,8 +318,7 @@ async fn webhook_rejects_wrong_signing_key() {
 #[tokio::test]
 async fn webhook_rejects_path_mismatch() {
     let signing_key = make_signing_key();
-    let verifier = make_verifier_with(signing_key.verifying_key());
-    let state = make_state(verifier).await;
+    let (state, _tmp) = build_state_with_key(signing_key.verifying_key()).await;
     let addr = start_server(state).await;
 
     let body = b"{}".to_vec();

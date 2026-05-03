@@ -33,6 +33,9 @@ pub struct Config {
     /// Inbound webhook configuration (license server calls).
     #[serde(default)]
     pub webhook: WebhookConfig,
+    /// Database configuration (audit log and nonce cache).
+    #[serde(default)]
+    pub db: DbConfig,
 }
 
 /// HTTP server settings.
@@ -102,8 +105,12 @@ pub struct HomeserverConfig {
 pub struct WebhookConfig {
     /// Maximum allowed clock skew in seconds for inbound webhook timestamps.
     pub max_timestamp_skew_secs: i64,
-    /// How many nonces to remember for replay protection.
+    /// Legacy field kept for schema compatibility. The persistent nonce store
+    /// replaced the in-memory LRU; this field is read from config but no
+    /// longer drives any behaviour.
     pub nonce_cache_capacity: usize,
+    /// How long a nonce stays in the persistent cache before garbage collection.
+    pub nonce_ttl_secs: i64,
 }
 
 impl Default for WebhookConfig {
@@ -111,6 +118,25 @@ impl Default for WebhookConfig {
         Self {
             max_timestamp_skew_secs: 300,
             nonce_cache_capacity: 10_000,
+            nonce_ttl_secs: 600,
+        }
+    }
+}
+
+/// Database configuration. `SQLite` is used for audit log and nonce cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbConfig {
+    /// Filesystem path to the `SQLite` database. Created if missing.
+    pub path: String,
+    /// Maximum number of concurrent connections in the pool.
+    pub max_connections: u32,
+}
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self {
+            path: "./imogo-provisioner.db".to_string(),
+            max_connections: 5,
         }
     }
 }

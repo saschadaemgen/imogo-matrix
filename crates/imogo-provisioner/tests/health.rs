@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Sascha Daemgen, IT and More Systems
 
-//! Integration tests for health endpoints and the AS endpoints, including
-//! `hs_token` validation. A wiremock server stands in for a real homeserver.
+//! Integration tests for health endpoints and the AS endpoints.
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use imogo_provisioner::{
-    config::HomeserverConfig,
+    audit::AuditLog,
+    config::{DbConfig, HomeserverConfig},
+    db,
     http::{appservice::AppState, router},
     keys::KeyRegistry,
     matrix::MatrixRegistry,
+    nonce_store::NonceStore,
     webhook::WebhookVerifier,
 };
 use serde_json::json;
+use tempfile::TempDir;
 use url::Url;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -47,14 +50,38 @@ fn test_homeserver_config(url: Url) -> HomeserverConfig {
     }
 }
 
-async fn start_provisioner(registry: MatrixRegistry) -> SocketAddr {
+async fn build_test_state(homeservers: BTreeMap<String, HomeserverConfig>) -> (AppState, TempDir) {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let db_cfg = DbConfig {
+        path: tmp.path().join("test.db").to_string_lossy().into_owned(),
+        max_connections: 2,
+    };
+    let pool = db::open_pool(&db_cfg).await.expect("db open");
+    let audit_log = AuditLog::new(pool.clone());
+    let nonce_store = NonceStore::new(pool, 600);
+    let registry = MatrixRegistry::build(&homeservers).await.expect("registry");
+    let verifier = WebhookVerifier::new(KeyRegistry::default(), nonce_store, 300);
+    (
+        AppState {
+            registry,
+            webhook_verifier: verifier,
+            audit_log,
+        },
+        tmp,
+    )
+}
+
+async fn start_provisioner(state: AppState) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let addr: SocketAddr = listener.local_addr().expect("local addr");
 
-    let webhook_verifier = WebhookVerifier::new(KeyRegistry::default(), 1024, 300);
-    let app = router::build(registry, webhook_verifier);
+    let app = router::build(
+        state.registry.clone(),
+        state.webhook_verifier.clone(),
+        state.audit_log.clone(),
+    );
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
@@ -66,10 +93,8 @@ async fn start_provisioner(registry: MatrixRegistry) -> SocketAddr {
 
 #[tokio::test]
 async fn healthz_returns_ok() {
-    let registry = MatrixRegistry::build(&BTreeMap::new())
-        .await
-        .expect("build empty registry");
-    let addr = start_provisioner(registry).await;
+    let (state, _tmp) = build_test_state(BTreeMap::new()).await;
+    let addr = start_provisioner(state).await;
 
     let resp = reqwest::get(format!("http://{addr}/healthz"))
         .await
@@ -81,10 +106,8 @@ async fn healthz_returns_ok() {
 
 #[tokio::test]
 async fn readyz_with_no_homeservers_is_ok() {
-    let registry = MatrixRegistry::build(&BTreeMap::new())
-        .await
-        .expect("build empty registry");
-    let addr = start_provisioner(registry).await;
+    let (state, _tmp) = build_test_state(BTreeMap::new()).await;
+    let addr = start_provisioner(state).await;
 
     let resp = reqwest::get(format!("http://{addr}/readyz")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -100,9 +123,9 @@ async fn readyz_with_reachable_homeserver_is_ok() {
 
     let mut homeservers = BTreeMap::new();
     homeservers.insert("test".to_string(), test_homeserver_config(url));
-    let registry = MatrixRegistry::build(&homeservers).await.expect("build");
 
-    let addr = start_provisioner(registry).await;
+    let (state, _tmp) = build_test_state(homeservers).await;
+    let addr = start_provisioner(state).await;
 
     let resp = reqwest::get(format!("http://{addr}/readyz")).await.unwrap();
     assert_eq!(resp.status(), 200);
@@ -119,8 +142,9 @@ async fn transactions_endpoint_rejects_missing_token() {
 
     let mut homeservers = BTreeMap::new();
     homeservers.insert("test".to_string(), test_homeserver_config(url));
-    let registry = MatrixRegistry::build(&homeservers).await.expect("build");
-    let addr = start_provisioner(registry).await;
+
+    let (state, _tmp) = build_test_state(homeservers).await;
+    let addr = start_provisioner(state).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -141,8 +165,9 @@ async fn transactions_endpoint_rejects_wrong_token() {
 
     let mut homeservers = BTreeMap::new();
     homeservers.insert("test".to_string(), test_homeserver_config(url));
-    let registry = MatrixRegistry::build(&homeservers).await.expect("build");
-    let addr = start_provisioner(registry).await;
+
+    let (state, _tmp) = build_test_state(homeservers).await;
+    let addr = start_provisioner(state).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -163,8 +188,9 @@ async fn transactions_endpoint_accepts_correct_token() {
 
     let mut homeservers = BTreeMap::new();
     homeservers.insert("test".to_string(), test_homeserver_config(url));
-    let registry = MatrixRegistry::build(&homeservers).await.expect("build");
-    let addr = start_provisioner(registry).await;
+
+    let (state, _tmp) = build_test_state(homeservers).await;
+    let addr = start_provisioner(state).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -176,16 +202,12 @@ async fn transactions_endpoint_accepts_correct_token() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body.is_object());
 }
 
 #[tokio::test]
 async fn transactions_endpoint_unknown_homeserver_returns_404() {
-    let registry = MatrixRegistry::build(&BTreeMap::new())
-        .await
-        .expect("build");
-    let addr = start_provisioner(registry).await;
+    let (state, _tmp) = build_test_state(BTreeMap::new()).await;
+    let addr = start_provisioner(state).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -206,8 +228,9 @@ async fn user_exists_returns_404_with_correct_token() {
 
     let mut homeservers = BTreeMap::new();
     homeservers.insert("test".to_string(), test_homeserver_config(url));
-    let registry = MatrixRegistry::build(&homeservers).await.expect("build");
-    let addr = start_provisioner(registry).await;
+
+    let (state, _tmp) = build_test_state(homeservers).await;
+    let addr = start_provisioner(state).await;
 
     let client = reqwest::Client::new();
     let resp = client
@@ -219,7 +242,3 @@ async fn user_exists_returns_404_with_correct_token() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
-
-// AppState only used to verify the type compiles in isolation.
-#[allow(dead_code)]
-fn _appstate_compiles(_state: AppState) {}

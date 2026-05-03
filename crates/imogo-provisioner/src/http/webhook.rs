@@ -3,9 +3,11 @@
 
 //! Webhook endpoint for license server calls.
 //!
-//! In Briefing-02c-1 the endpoint validates signature, timestamp, and nonce.
-//! Verified requests are logged and acknowledged with HTTP 202.
-//! Briefing-02c-3 will dispatch verified requests to the business logic.
+//! After the [`WebhookVerifier`](crate::webhook::WebhookVerifier) accepts a
+//! request, this handler appends one entry to the audit log and returns
+//! 202 Accepted. The audit append is the single source of truth that the
+//! webhook actually arrived; if it fails we return 500 so the license server
+//! retries.
 
 use axum::{
     Json,
@@ -14,13 +16,19 @@ use axum::{
     http::{HeaderMap, StatusCode, Uri},
     response::IntoResponse,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{info, warn};
 
 use super::appservice::AppState;
-use crate::webhook::{
-    HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, WebhookVerifyError,
+use crate::{
+    audit::NewAuditEntry,
+    webhook::{
+        HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, WebhookVerifyError,
+    },
 };
+
+/// Hard cap on the payload bytes stored in the audit log.
+const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
 /// Successful response payload.
 #[derive(Debug, Serialize)]
@@ -31,29 +39,23 @@ pub struct WebhookAck {
     pub key_id: String,
     /// Echoes back the accepted nonce.
     pub nonce: String,
+    /// Auto-increment id of the audit entry produced for this call.
+    pub audit_id: i64,
 }
 
-/// Generic error payload returned with HTTP 401.
+/// Generic error payload returned with HTTP 401 (or 500 for `audit_failed`).
 #[derive(Debug, Serialize)]
 pub struct WebhookError {
     /// Stable machine-readable error label.
     pub error: &'static str,
 }
 
-/// Optional payload structure. The actual schema is defined per event type
-/// and lives in 02c-3. Here we accept any JSON.
-#[derive(Debug, Deserialize)]
-pub struct AnyEvent {
-    /// Event type discriminator. Unused in 02c-1.
-    #[allow(dead_code)]
-    #[serde(rename = "type")]
-    pub event_type: Option<String>,
-}
-
 /// `POST /webhook/license`
 ///
-/// Verifies signature, timestamp, and nonce. On success returns 202 Accepted.
-/// On any verification failure returns 401 Unauthorized.
+/// Verifies signature, timestamp, and nonce. On success appends an audit
+/// entry and returns 202 Accepted. On verification failure returns 401
+/// Unauthorized. On audit-write failure (post-verification) returns 500 so
+/// the sender retries.
 pub async fn license_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -84,22 +86,52 @@ pub async fn license_webhook(
 
     match result {
         Ok(verified) => {
-            info!(
-                key_id = verified.key_id.as_str(),
-                nonce = verified.nonce.as_str(),
-                ts = verified.timestamp_unix_seconds,
-                body_len = body.len(),
-                "license webhook verified (no business logic yet)"
-            );
-            (
-                StatusCode::ACCEPTED,
-                Json(WebhookAck {
-                    status: "verified",
-                    key_id: verified.key_id,
-                    nonce: verified.nonce,
-                }),
-            )
-                .into_response()
+            let payload_truncated = if body.len() > MAX_PAYLOAD_BYTES {
+                String::from_utf8_lossy(&body[..MAX_PAYLOAD_BYTES]).into_owned()
+            } else {
+                String::from_utf8_lossy(&body).into_owned()
+            };
+
+            let audit_entry = state
+                .audit_log
+                .append(NewAuditEntry {
+                    event_type: "webhook.license.received".to_string(),
+                    actor: format!("license-server:{}", verified.key_id),
+                    subject: None,
+                    payload_json: payload_truncated,
+                })
+                .await;
+
+            match audit_entry {
+                Ok(entry) => {
+                    info!(
+                        audit_id = entry.id,
+                        key_id = verified.key_id.as_str(),
+                        nonce = verified.nonce.as_str(),
+                        "license webhook verified and audited"
+                    );
+                    (
+                        StatusCode::ACCEPTED,
+                        Json(WebhookAck {
+                            status: "verified",
+                            key_id: verified.key_id,
+                            nonce: verified.nonce,
+                            audit_id: entry.id,
+                        }),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    warn!(error = %e, "audit append failed after verification");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(WebhookError {
+                            error: "audit_failed",
+                        }),
+                    )
+                        .into_response()
+                }
+            }
         }
         Err(e) => {
             warn!(error = %e, "license webhook rejected");
@@ -110,6 +142,7 @@ pub async fn license_webhook(
                 WebhookVerifyError::NonceReplay => "nonce_replay",
                 WebhookVerifyError::UnknownKeyId => "unknown_key_id",
                 WebhookVerifyError::BadSignature => "bad_signature",
+                WebhookVerifyError::NonceStore(_) => "internal_error",
             };
             (
                 StatusCode::UNAUTHORIZED,

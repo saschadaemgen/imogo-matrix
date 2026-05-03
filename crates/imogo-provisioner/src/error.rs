@@ -23,6 +23,10 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Database open or migration failed.
+    #[error("database error: {0}")]
+    Db(String),
+
     /// Matrix homeserver connection setup or runtime failure.
     #[error("matrix error: {0}")]
     Matrix(String),

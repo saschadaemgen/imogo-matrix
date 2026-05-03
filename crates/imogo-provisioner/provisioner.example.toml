@@ -39,5 +39,13 @@ sender_localpart = "imogo-provisioner"
 [webhook]
 # Webhook requests outside this many seconds from current time are rejected.
 max_timestamp_skew_secs = 300
-# How many recently seen nonces to remember for replay protection.
+# Legacy field, kept for schema compatibility. The persistent nonce store
+# replaced the in-memory LRU.
 nonce_cache_capacity = 10000
+# How long a nonce stays in the persistent cache before garbage collection.
+nonce_ttl_secs = 600
+
+# SQLite database (audit log + persistent nonce cache).
+[db]
+path = "./imogo-provisioner.db"
+max_connections = 5

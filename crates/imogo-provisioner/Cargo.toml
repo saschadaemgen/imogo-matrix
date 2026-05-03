@@ -43,19 +43,24 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Matrix client SDK
-# `bundled-sqlite` instead of `sqlite` so libsqlite3-sys compiles sqlite3 from
-# source. Windows hosts typically do not ship sqlite3.lib system-wide.
+#
+# We deliberately do not enable `sqlite`/`bundled-sqlite` here, because the
+# audit log + nonce cache use sqlx (below) and sqlx and matrix-sdk-sqlite
+# pin different libsqlite3-sys major versions (cargo rejects two crates with
+# the same `links = "sqlite3"`). For the provisioner's needs the in-memory
+# state store of matrix-sdk is sufficient: we only do a fresh
+# `/_matrix/client/versions` ping per `MatrixRegistry::ping`, never a sync.
 matrix-sdk = { version = "0.13", default-features = false, features = [
     "rustls-tls",
-    "bundled-sqlite",
     "markdown",
 ] }
 
 # URL parsing
 url = { version = "2", features = ["serde"] }
 
-# Time
-chrono = { version = "0.4", features = ["serde"], default-features = false }
+# Time. `clock` enables Utc::now(), `std` for std::time integration,
+# `serde` for derive support on DateTime.
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
 # Constant-time string comparison for hs_token verification
 subtle = "2"
@@ -68,8 +73,26 @@ ed25519-dalek = { version = "2", features = ["std", "zeroize"] }
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
-lru = "0.12"
 zeroize = "1"
+
+# SQLite database (audit log + persistent nonce cache).
+# `runtime-tokio` since the rest of the binary already runs on tokio. The
+# `sqlite` feature pulls in libsqlite3-sys, which we configure below to
+# build sqlite3 from source (Windows hosts do not ship sqlite3.lib).
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+
+# Force the linked sqlite3 to be compiled from source. Without this the
+# Windows MSVC linker fails to find a system sqlite3.lib.
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+
+# UUID for audit log subject IDs (used by 02c-3 onwards, introduced here)
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 # Testing
@@ -77,3 +100,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "syn
 wiremock = "0.6"
 ed25519-dalek = { version = "2", features = ["std", "zeroize", "rand_core"] }
 rand = "0.8"
+tempfile = "3"

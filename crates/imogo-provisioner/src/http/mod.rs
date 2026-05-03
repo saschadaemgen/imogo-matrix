@@ -16,20 +16,25 @@ use tower_http::timeout::TimeoutLayer;
 use tracing::info;
 
 use crate::{
-    config::Config, error::Error, keys::KeyRegistry, matrix::MatrixRegistry,
-    webhook::WebhookVerifier,
+    audit::AuditLog, config::Config, db, error::Error, keys::KeyRegistry, matrix::MatrixRegistry,
+    nonce_store::NonceStore, webhook::WebhookVerifier,
 };
 
 /// Run the HTTP server until a shutdown signal is received. The Matrix
-/// registry is built before the listener accepts connections so a misconfigured
-/// homeserver fails fast.
+/// registry, the `SQLite` pool, and the key registry are all built before
+/// the listener accepts connections so a misconfigured component fails fast.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Matrix`] if any configured homeserver cannot be turned
-/// into a `matrix-sdk` client, or [`Error::Io`] if the listener cannot bind
-/// or `axum::serve` returns an I/O error.
+/// Returns [`Error::Db`] if the database cannot be opened or migrated,
+/// [`Error::Matrix`] if a configured homeserver cannot be turned into a
+/// `matrix-sdk` client, or [`Error::Io`] if the listener cannot bind or
+/// `axum::serve` returns an I/O error.
 pub async fn run(config: Config) -> Result<(), Error> {
+    let pool = db::open_pool(&config.db).await?;
+    let audit_log = AuditLog::new(pool.clone());
+    let nonce_store = NonceStore::new(pool, config.webhook.nonce_ttl_secs);
+
     let registry = MatrixRegistry::build(&config.matrix.homeservers)
         .await
         .map_err(|e| Error::Matrix(e.to_string()))?;
@@ -46,13 +51,10 @@ pub async fn run(config: Config) -> Result<(), Error> {
         registered_keys = keys.len(),
         "webhook key registry initialised"
     );
-    let webhook_verifier = WebhookVerifier::new(
-        keys,
-        config.webhook.nonce_cache_capacity,
-        config.webhook.max_timestamp_skew_secs,
-    );
+    let webhook_verifier =
+        WebhookVerifier::new(keys, nonce_store, config.webhook.max_timestamp_skew_secs);
 
-    let app = router::build(registry, webhook_verifier)
+    let app = router::build(registry, webhook_verifier, audit_log)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

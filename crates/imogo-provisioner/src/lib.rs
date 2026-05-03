@@ -8,11 +8,14 @@
 //! the bulk of the logic lives in this library so it can be tested in
 //! isolation.
 
+pub mod audit;
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod http;
 pub mod keys;
 pub mod matrix;
+pub mod nonce_store;
 pub mod telemetry;
 pub mod webhook;
 
