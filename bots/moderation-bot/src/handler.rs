@@ -99,6 +99,61 @@ pub async fn run(state: BotState) -> Result<(), ModError> {
         warn!(error = %e, "auto-discovery failed");
     }
 
+    // Step 2b: process invites that arrived during the prime syncs and
+    // would otherwise be missed by the StrippedRoomMemberEvent handler
+    // (matrix-sdk only re-delivers invite_state on changes).
+    for invited in client.invited_rooms() {
+        let room_id = invited.room_id().to_owned();
+        info!(room_id = %room_id, "processing pending invite from prime sync");
+
+        // Synthesize the inviter from the invite-state member event.
+        // Best-effort: if we cannot determine the inviter, accept anyway.
+        // When the allowlist becomes real (Briefing 05+) the inviter
+        // resolution must become more robust.
+        let inviter = invited
+            .invite_details()
+            .await
+            .ok()
+            .and_then(|details| details.inviter.map(|m| m.user_id().to_owned()));
+
+        if let Some(inviter_id) = inviter
+            && !is_inviter_allowed(&inviter_id)
+        {
+            let _ = invited.leave().await;
+            continue;
+        }
+
+        match invited.join().await {
+            Ok(()) => {
+                info!(room_id = %room_id, "pending invite accepted");
+                let append_res = audit::append(
+                    &state.pool,
+                    AuditEntry::now(
+                        Some(room_id.to_string()),
+                        state.bot_user_id.to_string(),
+                        "room_invite_accepted".to_string(),
+                        None,
+                        None,
+                        json!({ "source": "prime_sync_replay" }),
+                    ),
+                )
+                .await;
+                if let Err(e) = append_res {
+                    warn!(error = %e, "audit append for prime-sync replay failed");
+                }
+
+                // Run alias-based auto-discovery for this newly joined room.
+                let regex = state.alias_regex.read().await.clone();
+                if let Err(e) = check_alias_and_record(&state, &invited, &regex).await {
+                    warn!(error = %e, room_id = %room_id, "post-replay auto-discovery failed");
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, room_id = %room_id, "pending invite join failed");
+            }
+        }
+    }
+
     // Step 3: register the auto-join handler.
     let state_for_invite = state.clone();
     client.add_event_handler(move |event: StrippedRoomMemberEvent, room: Room| {
