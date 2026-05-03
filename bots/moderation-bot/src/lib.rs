@@ -20,6 +20,8 @@ pub mod db;
 pub mod error;
 pub mod handler;
 pub mod matrix_client;
+pub mod mute;
+pub mod pinned;
 pub mod power_level;
 pub mod reload;
 pub mod rooms;

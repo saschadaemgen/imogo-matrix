@@ -5,17 +5,19 @@
 
 use std::{process::ExitCode, sync::Arc};
 
+use matrix_sdk::{Client, config::SyncSettings};
 use regex::Regex;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use moderation_bot::{
+    audit,
     banned_words::WordCache,
     config::{Config, TelemetryConfig},
     db,
     handler::{self, BotState},
-    matrix_client,
+    matrix_client, mute,
 };
 
 #[tokio::main]
@@ -84,7 +86,20 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Prime the client room cache with one sync so that recovery has the
+    // room handles available. This is *additional* to the sync_once that
+    // [`handler::run`] performs; this one specifically populates the cache
+    // so that mute-recovery can resolve room ids to `Room`s.
+    if let Err(e) = client.sync_once(SyncSettings::default()).await {
+        warn!(error = %e, "pre-recovery sync_once failed; continuing");
+    }
+
+    if let Err(e) = recover_open_mutes(&pool, &client).await {
+        warn!(error = %e, "open-mute recovery failed (non-fatal)");
+    }
+
     let state = BotState {
+        client: client.clone(),
         pool,
         word_cache,
         alias_regex,
@@ -92,12 +107,25 @@ async fn main() -> ExitCode {
         config: Arc::new(config),
     };
 
-    if let Err(e) = handler::run(client, state).await {
+    if let Err(e) = handler::run(state).await {
         error!(error = %e, "sync loop ended");
         return ExitCode::FAILURE;
     }
 
     ExitCode::SUCCESS
+}
+
+async fn recover_open_mutes(
+    pool: &sqlx::SqlitePool,
+    client: &Client,
+) -> Result<(), moderation_bot::error::ModError> {
+    let open = audit::find_open_mutes(pool).await?;
+    if open.is_empty() {
+        info!("no open mutes to recover");
+    } else {
+        info!(count = open.len(), "recovering open mutes from audit log");
+    }
+    mute::schedule_recovery_tasks(pool, client, open).await
 }
 
 fn init_logging(cfg: &TelemetryConfig) -> Result<(), String> {

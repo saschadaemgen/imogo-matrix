@@ -192,3 +192,91 @@ pub async fn len(pool: &SqlitePool) -> Result<i64, ModError> {
         .await?;
     Ok(n)
 }
+
+/// One open mute reconstructed from the audit log.
+///
+/// Open means: a `user_muted` audit entry exists, and no later `user_unmuted`
+/// entry for the same `(room_id, target_user_id)` was appended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMute {
+    /// Audit-log row id of the mute entry.
+    pub mute_audit_id: i64,
+    /// Room in which the mute was applied.
+    pub room_id: String,
+    /// Muted user.
+    pub target_user_id: String,
+    /// Power level the user had before the mute (used to restore on unmute).
+    pub previous_power_level: i64,
+    /// Unix-second timestamp at which the mute should auto-expire.
+    pub expires_at: i64,
+}
+
+/// Walk the audit log and return every mute that has not yet been unmuted.
+///
+/// The function performs a single linear scan of `user_muted` rows and one
+/// follow-up `COUNT(*)` per row. This is acceptable in practice because the
+/// scan only runs once at bot startup. A future optimisation could collapse
+/// this into a single LEFT JOIN, but at the cost of more `SQL` complexity.
+///
+/// # Errors
+///
+/// Returns [`ModError::Db`] on database errors.
+pub async fn find_open_mutes(pool: &SqlitePool) -> Result<Vec<OpenMute>, ModError> {
+    let rows = sqlx::query(
+        "SELECT id, room_id, target_user_id, payload_json \
+         FROM moderation_audit_log \
+         WHERE action = 'user_muted' \
+         ORDER BY id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut open = Vec::new();
+    for row in rows {
+        let id: i64 = row.try_get("id")?;
+        let room_id: Option<String> = row.try_get("room_id")?;
+        let target_user_id: Option<String> = row.try_get("target_user_id")?;
+        let payload_json: String = row.try_get("payload_json")?;
+
+        let (Some(room_id), Some(target_user_id)) = (room_id, target_user_id) else {
+            continue;
+        };
+
+        let payload: serde_json::Value = serde_json::from_str(&payload_json).unwrap_or_default();
+        let expires_at = payload
+            .get("expires_at")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let previous_power_level = payload
+            .get("previous_power_level")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+
+        let unmuted_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM moderation_audit_log \
+             WHERE action = 'user_unmuted' \
+               AND room_id = ? \
+               AND target_user_id = ? \
+               AND id > ?",
+        )
+        .bind(&room_id)
+        .bind(&target_user_id)
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+
+        if unmuted_count > 0 {
+            continue;
+        }
+
+        open.push(OpenMute {
+            mute_audit_id: id,
+            room_id,
+            target_user_id,
+            previous_power_level,
+            expires_at,
+        });
+    }
+
+    Ok(open)
+}
