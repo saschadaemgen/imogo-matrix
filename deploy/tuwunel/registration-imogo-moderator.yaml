@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Sascha Daemgen, IT and More Systems
+#
+# Tuwunel Application Service registration for the imogo moderation bot.
+# Register via the admin room on matrix.imogo.de:
+#
+#   !admin appservices register
+#   ```yaml
+#   <contents of this file>
+#   ```
+#
+# Tuwunel responds with the generated `as_token` and `hs_token`. Paste them
+# into the bot's `mod-bot.toml` and into the operator's password vault.
+
+id: imogo-moderator
+url: null
+sender_localpart: imogo-moderator
+namespaces:
+  users:
+    - exclusive: true
+      regex: "@imogo-moderator:imogo\\.de"
+    - exclusive: true
+      regex: "@bot-mod_.*:imogo\\.de"
+  aliases: []
+  rooms: []
+rate_limited: false
+protocols: []

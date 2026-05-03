@@ -2048,6 +2048,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "moderation-bot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "figment",
+ "hex",
+ "libsqlite3-sys",
+ "matrix-sdk",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -34,6 +34,12 @@ crates/imogo-provisioner/provisioner.toml
 # faq-bot runtime config (real one is local, not committed)
 bots/faq-bot/faq-bot.toml
 
+# moderation-bot runtime config and database (local, not committed)
+bots/moderation-bot/mod-bot.toml
+bots/moderation-bot/data/moderation.db
+bots/moderation-bot/data/moderation.db-shm
+bots/moderation-bot/data/moderation.db-wal
+
 # Provisioner runtime database (real one is local, not committed)
 crates/imogo-provisioner/imogo-provisioner.db
 crates/imogo-provisioner/imogo-provisioner.db-shm

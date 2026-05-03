@@ -1,0 +1,23 @@
+# imogo moderation bot example configuration.
+# Copy to mod-bot.toml and adjust. Real mod-bot.toml is git-ignored.
+
+[matrix]
+homeserver_url = "https://matrix.imogo.de"
+user_id = "@imogo-moderator:imogo.de"
+as_token = "REPLACE_ME_WITH_AS_TOKEN_FROM_TUWUNEL_REGISTRATION"
+device_id = "moderation-bot"
+
+[database]
+path = "data/moderation.db"
+
+[bot]
+pl_kick = 50
+pl_ban = 50
+pl_mute = 50
+pl_pin = 50
+pl_word_admin = 50
+auto_discover_alias_pattern = "^#community.*:imogo\\.de$"
+max_mute_seconds = 604800
+
+[telemetry]
+log_level = "info"

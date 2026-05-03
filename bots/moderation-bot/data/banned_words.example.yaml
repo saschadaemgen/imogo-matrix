@@ -1,0 +1,26 @@
+# Beispieldatei fuer die initiale Bann-Wort-Liste.
+# DIESE DATEI WIRD VOM BOT NICHT GELESEN.
+# Sie dient nur als Vorlage und Erklaerung des Schemas.
+#
+# Live-Editing ueber Befehle im Raum:
+#   !mod ban-word add <wort> [substring|whole_word] [redact|warn|kick]
+#   !mod ban-word remove <wort>
+#   !mod ban-word list
+#
+# Drei paedagogische Beispiele:
+
+words:
+  # Substring-Match, Nachricht wird redacted
+  - word: "spamtest"
+    match_mode: substring
+    severity: redact
+
+  # Whole-word-Match, User wird gewarnt aber Nachricht bleibt
+  - word: "scheisse"
+    match_mode: whole_word
+    severity: warn
+
+  # Whole-word-Match, User wird sofort gekickt
+  - word: "n-wort-platzhalter"
+    match_mode: whole_word
+    severity: kick

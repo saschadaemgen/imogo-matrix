@@ -1,0 +1,71 @@
+[package]
+name = "moderation-bot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "imogo moderation bot for Matrix community rooms"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Async runtime. `time` for sleep-based mute scheduling.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "fs", "time"] }
+
+# Matrix SDK. No e2e and no sqlite features (sqlx owns the DB layer here).
+matrix-sdk = { version = "0.13", default-features = false, features = [
+    "rustls-tls",
+    "markdown",
+] }
+
+# SQLite. Same configuration as the provisioner: matrix-sdk has no sqlite
+# feature here, sqlx pulls libsqlite3-sys 0.30, the explicit override forces
+# the bundled C build (Windows hosts have no system sqlite3.lib).
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+    "chrono",
+] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Configuration
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# URL parsing
+url = { version = "2", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Time
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+
+# Audit-log hash chain
+sha2 = "0.10"
+hex = "0.4"
+
+# Banned-word whole-word matcher
+regex = "1"
+
+# HTTP client for the manual `m.login.application_service` call before
+# `restore_session`.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = "3"
