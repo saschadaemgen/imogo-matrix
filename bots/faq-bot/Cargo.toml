@@ -1,0 +1,51 @@
+[package]
+name = "faq-bot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "imogo FAQ bot for Matrix community rooms"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "fs"] }
+
+# Matrix SDK (sync loop and event handling). No e2e: community rooms are
+# unencrypted in v1. No sqlite: in-memory state store.
+matrix-sdk = { version = "0.13", default-features = false, features = [
+    "rustls-tls",
+    "markdown",
+] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Configuration
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# URL parsing
+url = { version = "2", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# File-watching for FAQ hot-reload
+notify = "6"
+
+# Concurrency primitives: hot-swap of FAQ list without holding a lock
+arc-swap = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tempfile = "3"

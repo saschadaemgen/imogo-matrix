@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Maintained as part of bots/faq-bot. Pull requests welcome.
+
+faqs:
+  - id: zugferd-grundlagen
+    keywords: ["zugferd", "zug-ferd", "hybrid", "pdf rechnung"]
+    summary: "Was ist ZUGFeRD?"
+    answer: |
+      ZUGFeRD ist ein hybrides Format: eine PDF/A-3-Datei mit eingebetteten
+      strukturierten Rechnungsdaten (XML). Der Empfaenger sieht eine normale PDF,
+      Buchhaltungssoftware kann gleichzeitig die XML-Daten automatisch verarbeiten.
+
+      imogo erstellt ZUGFeRD-Rechnungen automatisch, du musst nichts extra einstellen.
+
+  - id: rechnung-stornieren
+    keywords: ["storno", "stornieren", "rechnung loeschen", "rueckgaengig"]
+    summary: "Wie kann ich eine Rechnung stornieren?"
+    answer: |
+      Eine fertige Rechnung wird nicht geloescht (das waere nicht GoBD-konform),
+      sondern mit einer Storno-Rechnung ausgeglichen.
+
+      In imogo: oeffne die Original-Rechnung, klicke "Stornieren", waehle das Datum.
+      Es wird automatisch eine neue Rechnung mit negativen Betraegen erzeugt.
+
+  - id: kosit-validierung
+    keywords: ["kosit", "validierung", "validieren", "ungueltig", "fehler"]
+    summary: "Was bedeutet ein KoSIT-Validierungsfehler?"
+    answer: |
+      KoSIT ist die offizielle Pruefsoftware fuer XRechnung. imogo prueft jede
+      Rechnung gegen KoSIT, bevor sie versendet wird.
+
+      Haeufige Fehler: fehlende Pflichtfelder (Kaeufer-Steuernummer bei B2B),
+      ungueltige Betraege (negative Mengen), oder Format-Probleme im IBAN.
+
+      Der Fehlertext nennt das exakte Feld. Bei Unklarheit: schreib im Support-Raum.

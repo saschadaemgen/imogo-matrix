@@ -1,0 +1,16 @@
+# imogo FAQ bot example configuration.
+# Copy to faq-bot.toml and adjust. Real faq-bot.toml is git-ignored.
+
+[matrix]
+homeserver_url = "https://matrix.imogo.de"
+user_id = "@bot-faq:imogo.de"
+access_token = "REPLACE_ME"
+display_name = "imogo FAQ-Bot"
+
+[faqs]
+path = "data/faqs.yaml"
+watch = true
+
+[log]
+filter = "faq_bot=info,matrix_sdk=warn"
+json = false

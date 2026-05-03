@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/imogo-provisioner",
+    "bots/faq-bot",
 ]
 
 [workspace.package]
