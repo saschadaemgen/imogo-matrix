@@ -12,18 +12,23 @@ use super::{
     appservice::{self, AppState},
     health, webhook,
 };
-use crate::{audit::AuditLog, matrix::MatrixRegistry, webhook::WebhookVerifier};
+use crate::{
+    audit::AuditLog, matrix::MatrixRegistry, provisioning::ProvisioningService,
+    webhook::WebhookVerifier,
+};
 
 /// Build the full router with shared application state.
 pub fn build(
     registry: MatrixRegistry,
     webhook_verifier: WebhookVerifier,
     audit_log: AuditLog,
+    provisioning: ProvisioningService,
 ) -> Router {
     let state = AppState {
         registry,
         webhook_verifier,
         audit_log,
+        provisioning,
     };
 
     Router::new()

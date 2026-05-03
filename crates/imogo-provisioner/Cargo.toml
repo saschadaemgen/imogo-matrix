@@ -94,6 +94,12 @@ libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 # UUID for audit log subject IDs (used by 02c-3 onwards, introduced here)
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Random number generation for matrix UUIDs and initial passwords
+rand = "0.8"
+
+# Base32 encoding for matrix UUIDs (RFC 4648 lowercase, no padding)
+data-encoding = "2"
+
 [dev-dependencies]
 # Testing
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "test-util"] }

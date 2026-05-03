@@ -49,3 +49,10 @@ nonce_ttl_secs = 600
 [db]
 path = "./imogo-provisioner.db"
 max_connections = 5
+
+# Provisioning policy: which homeserver receives B2B accounts, who is invited
+# into every newly created support room, what tiers are allowed.
+[provisioning]
+b2b_homeserver = "b2b"
+support_invitees = ["@support-team:imogo.de"]
+allowed_tiers = ["solo", "kmu", "pro", "enterprise"]

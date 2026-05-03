@@ -6,13 +6,15 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use imogo_provisioner::{
+    accounts::AccountsRepo,
     audit::AuditLog,
-    config::{DbConfig, HomeserverConfig},
+    config::{DbConfig, HomeserverConfig, ProvisioningConfig},
     db,
     http::{appservice::AppState, router},
     keys::KeyRegistry,
     matrix::MatrixRegistry,
     nonce_store::NonceStore,
+    provisioning::ProvisioningService,
     webhook::WebhookVerifier,
 };
 use serde_json::json;
@@ -58,14 +60,23 @@ async fn build_test_state(homeservers: BTreeMap<String, HomeserverConfig>) -> (A
     };
     let pool = db::open_pool(&db_cfg).await.expect("db open");
     let audit_log = AuditLog::new(pool.clone());
-    let nonce_store = NonceStore::new(pool, 600);
+    let nonce_store = NonceStore::new(pool.clone(), 600);
+    let accounts = AccountsRepo::new(pool);
     let registry = MatrixRegistry::build(&homeservers).await.expect("registry");
     let verifier = WebhookVerifier::new(KeyRegistry::default(), nonce_store, 300);
+    let provisioning = ProvisioningService::new(
+        accounts,
+        audit_log.clone(),
+        registry.clone(),
+        ProvisioningConfig::default(),
+        reqwest::Client::new(),
+    );
     (
         AppState {
             registry,
             webhook_verifier: verifier,
             audit_log,
+            provisioning,
         },
         tmp,
     )
@@ -81,6 +92,7 @@ async fn start_provisioner(state: AppState) -> SocketAddr {
         state.registry.clone(),
         state.webhook_verifier.clone(),
         state.audit_log.clone(),
+        state.provisioning.clone(),
     );
 
     tokio::spawn(async move {

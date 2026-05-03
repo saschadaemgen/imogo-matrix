@@ -8,15 +8,19 @@
 //! the bulk of the logic lives in this library so it can be tested in
 //! isolation.
 
+pub mod accounts;
 pub mod audit;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod identity;
 pub mod keys;
 pub mod matrix;
 pub mod nonce_store;
+pub mod provisioning;
 pub mod telemetry;
+pub mod tuwunel;
 pub mod webhook;
 
 /// Crate version, taken from Cargo.toml at compile time.

@@ -26,8 +26,7 @@ pub struct Config {
     pub http: HttpConfig,
     /// Logging settings.
     pub log: LogConfig,
-    /// Matrix homeserver connections. Map key is a logical name like `b2b`
-    /// or `b2c` used in logs and as the URL prefix for incoming AS endpoints.
+    /// Matrix homeserver connections.
     #[serde(default)]
     pub matrix: MatrixConfig,
     /// Inbound webhook configuration (license server calls).
@@ -36,6 +35,10 @@ pub struct Config {
     /// Database configuration (audit log and nonce cache).
     #[serde(default)]
     pub db: DbConfig,
+    /// Provisioning policy: which homeserver receives B2B accounts, who is
+    /// invited to support rooms, what tiers are allowed.
+    #[serde(default)]
+    pub provisioning: ProvisioningConfig,
 }
 
 /// HTTP server settings.
@@ -141,15 +144,44 @@ impl Default for DbConfig {
     }
 }
 
+/// Provisioning policy. Which homeserver receives new B2B accounts, who is
+/// invited to support rooms, what tiers are allowed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvisioningConfig {
+    /// Logical homeserver name where new B2B accounts are created. Must
+    /// match a key in [`MatrixConfig::homeservers`].
+    pub b2b_homeserver: String,
+    /// Matrix user IDs (fully qualified, e.g. `@support-team:imogo.de`) to
+    /// invite into every newly created support room with power level 100.
+    #[serde(default)]
+    pub support_invitees: Vec<String>,
+    /// Allowed tier strings. Webhook payloads with other tiers are rejected.
+    #[serde(default = "default_tiers")]
+    pub allowed_tiers: Vec<String>,
+}
+
+fn default_tiers() -> Vec<String> {
+    vec![
+        "solo".to_string(),
+        "kmu".to_string(),
+        "pro".to_string(),
+        "enterprise".to_string(),
+    ]
+}
+
+impl Default for ProvisioningConfig {
+    fn default() -> Self {
+        Self {
+            b2b_homeserver: "b2b".to_string(),
+            support_invitees: Vec::new(),
+            allowed_tiers: default_tiers(),
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from defaults, optional `provisioner.toml`, and
     /// environment variables.
-    ///
-    /// Resolution order, last wins:
-    /// 1. Built-in [`Config::default`] values.
-    /// 2. `provisioner.toml` in the current working directory, if present.
-    /// 3. Environment variables prefixed `IMOGO_PROVISIONER_`, double
-    ///    underscore as nested-key separator.
     ///
     /// # Errors
     ///

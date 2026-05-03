@@ -16,8 +16,9 @@ use tower_http::timeout::TimeoutLayer;
 use tracing::info;
 
 use crate::{
-    audit::AuditLog, config::Config, db, error::Error, keys::KeyRegistry, matrix::MatrixRegistry,
-    nonce_store::NonceStore, webhook::WebhookVerifier,
+    accounts::AccountsRepo, audit::AuditLog, config::Config, db, error::Error, keys::KeyRegistry,
+    matrix::MatrixRegistry, nonce_store::NonceStore, provisioning::ProvisioningService,
+    webhook::WebhookVerifier,
 };
 
 /// Run the HTTP server until a shutdown signal is received. The Matrix
@@ -33,7 +34,8 @@ use crate::{
 pub async fn run(config: Config) -> Result<(), Error> {
     let pool = db::open_pool(&config.db).await?;
     let audit_log = AuditLog::new(pool.clone());
-    let nonce_store = NonceStore::new(pool, config.webhook.nonce_ttl_secs);
+    let nonce_store = NonceStore::new(pool.clone(), config.webhook.nonce_ttl_secs);
+    let accounts = AccountsRepo::new(pool);
 
     let registry = MatrixRegistry::build(&config.matrix.homeservers)
         .await
@@ -54,7 +56,15 @@ pub async fn run(config: Config) -> Result<(), Error> {
     let webhook_verifier =
         WebhookVerifier::new(keys, nonce_store, config.webhook.max_timestamp_skew_secs);
 
-    let app = router::build(registry, webhook_verifier, audit_log)
+    let provisioning = ProvisioningService::new(
+        accounts,
+        audit_log.clone(),
+        registry.clone(),
+        config.provisioning.clone(),
+        reqwest::Client::new(),
+    );
+
+    let app = router::build(registry, webhook_verifier, audit_log, provisioning)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

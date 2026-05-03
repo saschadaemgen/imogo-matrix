@@ -3,11 +3,15 @@
 
 //! Webhook endpoint for license server calls.
 //!
-//! After the [`WebhookVerifier`](crate::webhook::WebhookVerifier) accepts a
-//! request, this handler appends one entry to the audit log and returns
-//! 202 Accepted. The audit append is the single source of truth that the
-//! webhook actually arrived; if it fails we return 500 so the license server
-//! retries.
+//! Pipeline (each step is a hard gate; failure short-circuits with the noted
+//! HTTP status):
+//!
+//! 1. Verify signature/timestamp/nonce -> 401 on failure.
+//! 2. Append `webhook.license.received` audit entry -> 500 on failure.
+//! 3. Parse body as `LicenseActivatedPayload` -> 400 on failure.
+//! 4. Check `event_type == "license.activated"` -> 400 otherwise.
+//! 5. Hand off to [`ProvisioningService`](crate::provisioning::ProvisioningService);
+//!    map [`ProvisioningError`] to the appropriate status code (400/500/502).
 
 use axum::{
     Json,
@@ -22,6 +26,7 @@ use tracing::{info, warn};
 use super::appservice::AppState;
 use crate::{
     audit::NewAuditEntry,
+    provisioning::{ActivationOutcome, LicenseActivatedPayload, ProvisioningError},
     webhook::{
         HEADER_KEY_ID, HEADER_NONCE, HEADER_SIGNATURE, HEADER_TIMESTAMP, WebhookVerifyError,
     },
@@ -30,10 +35,10 @@ use crate::{
 /// Hard cap on the payload bytes stored in the audit log.
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
-/// Successful response payload.
+/// Successful response payload returned with HTTP 201 (created) or 200 (already existed).
 #[derive(Debug, Serialize)]
 pub struct WebhookAck {
-    /// Always `"verified"` on success.
+    /// `"activated"` for newly created accounts, `"existed"` for idempotent replays.
     pub status: &'static str,
     /// Echoes back the verified `key_id`.
     pub key_id: String,
@@ -41,21 +46,22 @@ pub struct WebhookAck {
     pub nonce: String,
     /// Auto-increment id of the audit entry produced for this call.
     pub audit_id: i64,
+    /// Account record and (for new accounts only) the initial password.
+    pub outcome: ActivationOutcome,
 }
 
-/// Generic error payload returned with HTTP 401 (or 500 for `audit_failed`).
+/// Generic error payload.
 #[derive(Debug, Serialize)]
 pub struct WebhookError {
     /// Stable machine-readable error label.
     pub error: &'static str,
+    /// Optional human-readable diagnostic, kept short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// `POST /webhook/license`
-///
-/// Verifies signature, timestamp, and nonce. On success appends an audit
-/// entry and returns 202 Accepted. On verification failure returns 401
-/// Unauthorized. On audit-write failure (post-verification) returns 500 so
-/// the sender retries.
+#[allow(clippy::too_many_lines)]
 pub async fn license_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -71,7 +77,8 @@ pub async fn license_webhook(
         .path_and_query()
         .map_or_else(|| uri.path(), axum::http::uri::PathAndQuery::as_str);
 
-    let result = state
+    // Step 1: verify
+    let verify = state
         .webhook_verifier
         .verify(
             "POST",
@@ -84,55 +91,8 @@ pub async fn license_webhook(
         )
         .await;
 
-    match result {
-        Ok(verified) => {
-            let payload_truncated = if body.len() > MAX_PAYLOAD_BYTES {
-                String::from_utf8_lossy(&body[..MAX_PAYLOAD_BYTES]).into_owned()
-            } else {
-                String::from_utf8_lossy(&body).into_owned()
-            };
-
-            let audit_entry = state
-                .audit_log
-                .append(NewAuditEntry {
-                    event_type: "webhook.license.received".to_string(),
-                    actor: format!("license-server:{}", verified.key_id),
-                    subject: None,
-                    payload_json: payload_truncated,
-                })
-                .await;
-
-            match audit_entry {
-                Ok(entry) => {
-                    info!(
-                        audit_id = entry.id,
-                        key_id = verified.key_id.as_str(),
-                        nonce = verified.nonce.as_str(),
-                        "license webhook verified and audited"
-                    );
-                    (
-                        StatusCode::ACCEPTED,
-                        Json(WebhookAck {
-                            status: "verified",
-                            key_id: verified.key_id,
-                            nonce: verified.nonce,
-                            audit_id: entry.id,
-                        }),
-                    )
-                        .into_response()
-                }
-                Err(e) => {
-                    warn!(error = %e, "audit append failed after verification");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(WebhookError {
-                            error: "audit_failed",
-                        }),
-                    )
-                        .into_response()
-                }
-            }
-        }
+    let verified = match verify {
+        Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "license webhook rejected");
             let label = match e {
@@ -144,9 +104,128 @@ pub async fn license_webhook(
                 WebhookVerifyError::BadSignature => "bad_signature",
                 WebhookVerifyError::NonceStore(_) => "internal_error",
             };
-            (
+            return (
                 StatusCode::UNAUTHORIZED,
-                Json(WebhookError { error: label }),
+                Json(WebhookError {
+                    error: label,
+                    detail: None,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 2: audit (truncated body, never the password).
+    let payload_truncated = if body.len() > MAX_PAYLOAD_BYTES {
+        String::from_utf8_lossy(&body[..MAX_PAYLOAD_BYTES]).into_owned()
+    } else {
+        String::from_utf8_lossy(&body).into_owned()
+    };
+    let audit_entry = state
+        .audit_log
+        .append(NewAuditEntry {
+            event_type: "webhook.license.received".to_string(),
+            actor: format!("license-server:{}", verified.key_id),
+            subject: None,
+            payload_json: payload_truncated,
+        })
+        .await;
+    let audit_id = match audit_entry {
+        Ok(e) => e.id,
+        Err(e) => {
+            warn!(error = %e, "audit append failed after verification");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WebhookError {
+                    error: "audit_failed",
+                    detail: None,
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 3: parse payload.
+    let payload: LicenseActivatedPayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "license payload parse error");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(WebhookError {
+                    error: "invalid_payload",
+                    detail: Some(e.to_string()),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Step 4: event_type gate.
+    if payload.event_type != "license.activated" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(WebhookError {
+                error: "unsupported_event_type",
+                detail: Some(payload.event_type.clone()),
+            }),
+        )
+            .into_response();
+    }
+
+    // Step 5: provisioning.
+    match state.provisioning.handle_license_activated(payload).await {
+        Ok(outcome) => {
+            let status_code = if outcome.already_existed {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            };
+            info!(
+                already_existed = outcome.already_existed,
+                license_id = outcome.account.license_id.as_str(),
+                matrix_user_id = outcome.account.matrix_user_id.as_str(),
+                "activation handled"
+            );
+            (
+                status_code,
+                Json(WebhookAck {
+                    status: if outcome.already_existed {
+                        "existed"
+                    } else {
+                        "activated"
+                    },
+                    key_id: verified.key_id,
+                    nonce: verified.nonce,
+                    audit_id,
+                    outcome,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            warn!(error = %e, "activation failed");
+            let (status, code) = match e {
+                ProvisioningError::MissingLicenseId
+                | ProvisioningError::MissingCustomerName
+                | ProvisioningError::InvalidTier(_) => {
+                    (StatusCode::BAD_REQUEST, "validation_error")
+                }
+                ProvisioningError::HomeserverNotRegistered(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "homeserver_not_registered",
+                ),
+                ProvisioningError::Tuwunel(_) => (StatusCode::BAD_GATEWAY, "tuwunel_error"),
+                ProvisioningError::Account(_) | ProvisioningError::Audit(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+                }
+            };
+            (
+                status,
+                Json(WebhookError {
+                    error: code,
+                    detail: Some(e.to_string()),
+                }),
             )
                 .into_response()
         }
