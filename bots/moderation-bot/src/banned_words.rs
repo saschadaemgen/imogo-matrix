@@ -197,8 +197,7 @@ fn matches_one(w: &BannedWord, lower_msg: &str) -> bool {
             RegexBuilder::new(&pattern)
                 .case_insensitive(true)
                 .build()
-                .map(|r| r.is_match(lower_msg))
-                .unwrap_or(false)
+                .is_ok_and(|r| r.is_match(lower_msg))
         }
     }
 }
