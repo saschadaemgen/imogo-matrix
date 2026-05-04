@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Sascha Daemgen, IT and More Systems
+#
+# Release-Pipeline für den Moderations-Bot.
+#
+# Triggert auf Tags der Form `mod-bot-v*` (z.B. `mod-bot-v0.1.0`). Der
+# Tag-Namespace reserviert das Prefix für diesen Bot, damit FAQ-Bot
+# (`faq-bot-v*`), Support-Bot (`support-bot-v*`) und Provisioner
+# (`provisioner-v*`) später unabhängig versioniert werden können.
+#
+# Output: ein Linux-x86_64-Binary, eine SHA-256-Pruefsumme zum Verifizieren
+# beim Deploy, plus die Beispiel-Config und die AS-Registration. Die
+# `permissions: contents: write` ist notwendig, damit
+# `softprops/action-gh-release` ein Release auf GitHub erstellen darf.
+
+name: Release moderation-bot
+
+on:
+  push:
+    tags:
+      - 'mod-bot-v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Linux release binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build moderation-bot release
+        run: cargo build --release --bin moderation-bot
+
+      - name: Stage release artifacts and compute checksum
+        run: |
+          mkdir -p dist
+          cp target/release/moderation-bot dist/moderation-bot-linux-x86_64
+          cp bots/moderation-bot/mod-bot.example.toml dist/
+          cp deploy/tuwunel/registration-imogo-moderator.yaml dist/
+          cd dist
+          sha256sum moderation-bot-linux-x86_64 > moderation-bot-linux-x86_64.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/moderation-bot-linux-x86_64
+            dist/moderation-bot-linux-x86_64.sha256
+            dist/mod-bot.example.toml
+            dist/registration-imogo-moderator.yaml
+          generate_release_notes: true

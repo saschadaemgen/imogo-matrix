@@ -99,6 +99,52 @@ Dieses Repository befindet sich in der initialen Aufbau-Phase. Server-Infrastruk
 
 ---
 
+## Deployment
+
+Der Moderations-Bot wird über GitHub Releases verteilt und auf dem VPS unter dem User `imogobot` als systemd-Service ausgeführt. Eigener User getrennt vom Tuwunel-User: der Bot kann Tuwunel-Daten nicht versehentlich lesen oder ändern.
+
+### Initiales Setup eines neuen VPS
+
+```bash
+sudo bash deploy/scripts/setup-vps-imogobot.sh
+```
+
+Das Skript ist idempotent. Es legt den User `imogobot` an, erstellt `/opt/imogo-bots/moderation-bot/{data,backups}`, installiert die GitHub CLI (falls fehlt), registriert die systemd-Unit und enabled sie. Anschließend muss eine echte `mod-bot.toml` mit dem AS-Token von Tuwunel nach `/opt/imogo-bots/moderation-bot/` kopiert werden, und `gh auth login` muss als root für den Deploy-Pfad ausgeführt werden.
+
+### Update auf neueste Version
+
+```bash
+sudo bash deploy/scripts/deploy-moderation-bot.sh
+```
+
+Lädt das neueste GitHub-Release (Tag `mod-bot-v*`), verifiziert die SHA-256-Prüfsumme, ersetzt das Binary atomar und startet den systemd-Service neu. Bei Hash-Mismatch oder Service-Fehler bricht das Skript ab und das alte Binary bleibt aktiv.
+
+### Logs ansehen
+
+```bash
+journalctl -u imogo-moderation-bot -f
+```
+
+### Backup manuell anstoßen
+
+```bash
+sudo -u imogobot bash deploy/scripts/backup-bot-databases.sh
+```
+
+Cron-Eintrag (manuell zu installieren, weil das eine Operator-Entscheidung ist):
+
+```bash
+sudo crontab -u imogobot -e
+# Zeile hinzufuegen:
+0 3 * * * /opt/imogo-bots/scripts/backup-bot-databases.sh >> /var/log/imogo-bot-backup.log 2>&1
+```
+
+### CI
+
+Bei jedem Push und Pull-Request gegen `main` läuft `.github/workflows/ci.yml`: fmt-check, clippy mit `-D warnings`, release-Build, Workspace-Tests. Tag-Pushes der Form `mod-bot-v*` triggern `.github/workflows/release-moderation-bot.yml`, das ein Linux-x86_64-Binary samt SHA-256-Prüfsumme als GitHub-Release veröffentlicht.
+
+---
+
 ## Verwandte Repositories
 
 - **imogo** (privat) - Hauptprodukt, Tauri-Desktop-Anwendung

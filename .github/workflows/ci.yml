@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Sascha Daemgen, IT and More Systems
+#
+# Continuous Integration für imogo-matrix.
+#
+# Läuft auf jedem Push gegen main und auf jedem Pull-Request gegen main,
+# sowie manuell via workflow_dispatch. Pflichtschritte: fmt-check, clippy
+# mit -D warnings, release-Build, Workspace-Tests. Alle gehen mit
+# `--features dev-keys`, damit der Provisioner seine Test-Schluessel
+# aktiviert (analog zur lokalen Entwicklung).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Build, Clippy, Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Clippy (workspace, all targets, deny warnings)
+        run: cargo clippy --workspace --all-targets --features dev-keys -- -D warnings
+
+      - name: Build (workspace, release)
+        run: cargo build --workspace --release --features dev-keys
+
+      - name: Test (workspace)
+        run: cargo test --workspace --features dev-keys

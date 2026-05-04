@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Sascha Daemgen, IT and More Systems
+#
+# systemd-Unit für den imogo-Moderations-Bot.
+#
+# Installation: nach /etc/systemd/system/imogo-moderation-bot.service
+# kopieren, dann `systemctl daemon-reload && systemctl enable
+# imogo-moderation-bot.service`. Wird vom setup-vps-imogobot.sh
+# automatisch erledigt.
+
+[Unit]
+Description=imogo Moderation Bot
+Documentation=https://github.com/saschadaemgen/imogo-matrix
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imogobot
+Group=imogobot
+WorkingDirectory=/opt/imogo-bots/moderation-bot
+ExecStart=/opt/imogo-bots/moderation-bot/moderation-bot
+# Bei Crash neu starten, aber nur mit gedrosselter Wiederholrate, damit
+# Crash-Loops das System nicht belasten.
+Restart=on-failure
+RestartSec=10s
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Security hardening. Jeder Block ist konservativ; falls eine Funktion
+# in einem späteren Briefing zusätzliche Pfade oder Capabilities braucht,
+# explizit lockern statt eines Direktiven-Blanket.
+NoNewPrivileges=true
+PrivateTmp=true
+# Komplettes Dateisystem read-only ausser den hier explizit zugelassenen
+# Schreibpfaden. SQLite-DB landet unter data/, daher exakt dieser Pfad.
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/imogo-bots/moderation-bot/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# AF_UNIX für lokale Sockets, AF_INET/AF_INET6 für die Matrix-HTTPS-
+# Verbindung; Netlink, Bluetooth etc. werden nicht benötigt.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Verhindert JIT-Code-Generierung; der Bot ist statisch kompiliertes
+# Rust und braucht das nicht.
+MemoryDenyWriteExecute=true
+
+# Resource limits. 4096 Datei-Handles sind grosszuegig fuer einen Bot
+# mit einer Long-Poll-Verbindung; 128 Tasks decken Tokio-Worker plus
+# Auto-Unmute-Spawns mit Reserve ab.
+LimitNOFILE=4096
+TasksMax=128
+
+# Logging via journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=imogo-moderation-bot
+
+[Install]
+WantedBy=multi-user.target
